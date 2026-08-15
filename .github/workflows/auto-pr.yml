@@ -2,9 +2,9 @@ name: auto-pr
 
 # PR 校验 + 反链验证 + SSRF 防护 + 自动合并 workflow
 #
-# 触发：
-#   1. pull_request_target (opened/synchronize/reopened) - PR 事件
-#   2. issue_comment (created) - 评论 /recheck 或 /重新校验 重新触发校验
+# 触发：pull_request_target (opened/synchronize/reopened)
+#   ⚠️ 用 pull_request_target 而非 pull_request，因为贡献者从 fork 提 PR 时，
+#      pull_request 会以 fork 的 ref 跑代码，有安全风险；pull_request_target 用 base 的代码 + secrets。
 #
 # 校验维度：
 #   1. PR 只能改 data/friends/ 下单个 .json 文件
@@ -16,34 +16,26 @@ name: auto-pr
 #   7. URL + avatar 可达性检查（多 UA + 重试 + Content-Type）
 #   8. 反链验证：fetch backlink 页面 HTML，检查是否包含本站 URL
 #
-# 评论触发：
-#   - 在 PR 评论 /recheck 或 /重新校验 可重新触发校验
-#   - 仅 PR 作者或仓库协作者可触发（防滥用）
-#
-# 校验逻辑在 scripts/validate-pr.mjs，两个 job 共用
+# 校验逻辑在 scripts/validate-pr.mjs
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: write
   pull-requests: write
-  actions: write
+  actions: write  # 用于触发 build workflow (createWorkflowDispatch)
 
 env:
   PAT: ${{ secrets.GITHUB_TOKEN }}
 
 concurrency:
-  group: auto-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: auto-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   triage:
-    # PR 事件触发
-    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -66,104 +58,4 @@ jobs:
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             await runValidation({
               owner, repo, pull_number, prHead, prAuthor, runUrl, github, core,
-              closeOnFail: true,
-            });
-
-  recheck:
-    # 评论 /recheck 或 /重新校验 触发
-    if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request &&
-      (contains(github.event.comment.body, '/recheck') || contains(github.event.comment.body, '/重新校验'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Recheck via comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.PAT }}
-          script: |
-            const { runValidation } = await import('${{ github.workspace }}/scripts/validate-pr.mjs');
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const commenter = context.payload.comment.user.login;
-            const commentBody = context.payload.comment.body;
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-
-            // 关键词检查（精确匹配，避免误触发）
-            const keywords = ['/recheck', '/重新校验'];
-            const trimmed = commentBody.trim();
-            const matched = keywords.some(k =>
-              trimmed === k || trimmed.startsWith(k + ' ') || trimmed.startsWith(k + '\n')
-            );
-            if (!matched) {
-              core.info(`评论不匹配关键词，跳过：${trimmed.slice(0, 50)}`);
-              return;
-            }
-            core.info(`✓ 匹配重新校验关键词`);
-
-            // 拉取 PR 信息
-            const pull_number = context.payload.issue.number;
-            let pr;
-            try {
-              const res = await github.rest.pulls.get({ owner, repo, pull_number });
-              pr = res.data;
-            } catch (e) {
-              core.warning(`无法获取 PR #${pull_number}: ${e.message}`);
-              return;
-            }
-
-            // 权限检查：仅 PR 作者或仓库协作者可触发
-            const prAuthor = pr.user.login;
-            let canTrigger = false;
-            if (commenter === prAuthor) {
-              canTrigger = true;
-              core.info(`✓ 评论者是 PR 作者：@${commenter}`);
-            } else {
-              try {
-                const permRes = await github.rest.repos.getCollaboratorPermissionLevel({
-                  owner, repo, username: commenter,
-                });
-                if (['admin', 'maintain', 'write'].includes(permRes.data.permission)) {
-                  canTrigger = true;
-                  core.info(`✓ 评论者是仓库协作者（${permRes.data.permission}）：@${commenter}`);
-                }
-              } catch (e) {
-                core.warning(`无法查询评论者权限：${e.message}`);
-              }
-            }
-
-            if (!canTrigger) {
-              core.warning(`✗ 评论者无权限：@${commenter}（PR 作者：@${prAuthor}）`);
-              try {
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: pull_number,
-                  body: `@${commenter} 仅 PR 作者或仓库协作者可触发重新校验。`,
-                });
-              } catch (e) {
-                core.warning(`createComment failed: ${e.message}`);
-              }
-              return;
-            }
-
-            // PR 必须是 open 状态
-            if (pr.state !== 'open') {
-              core.info(`PR 状态为 ${pr.state}，跳过`);
-              return;
-            }
-
-            core.info(`✓ 开始重新校验 PR #${pull_number}`);
-
-            await runValidation({
-              owner, repo, pull_number,
-              prHead: pr.head,
-              prAuthor,
-              runUrl, github, core,
-              closeOnFail: false,  // 评论触发不关闭 PR
-              isRecheck: true,
             });

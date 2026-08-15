@@ -126,7 +126,7 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 ### 失败时
 
 - 评论错误清单 + 修复指引 + Action 日志链接
-- 自动关闭 PR（PR 事件触发时）
+- 自动关闭 PR
 - 贡献者收到 closed 邮件 + 评论邮件
 
 ### 成功时
@@ -135,31 +135,6 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 - 触发 build workflow 重建 friends.json
 - jsDelivr CDN 缓存数分钟内刷新
 - 不发评论（GitHub 默认会发 merged 邮件给贡献者）
-
-## 评论触发重新校验
-
-如果 PR 因为反链验证失败（比如对方友链页 CDN 缓存还没刷新），可以在 PR 评论：
-
-```
-/recheck
-```
-
-或中文：
-
-```
-/重新校验
-```
-
-workflow 会重新拉取最新 commit SHA 重新校验。
-
-**权限**：
-- ✅ PR 作者可以评论触发
-- ✅ 仓库协作者（admin/maintain/write）可以评论触发
-- ❌ 其他用户评论会被拒绝并提示
-
-**与 push 触发的区别**：
-- push 触发（`synchronize` 事件）：失败会关闭 PR
-- 评论触发（`/recheck`）：失败**不关闭** PR，方便用户继续修复
 
 ## 反链验证细节
 

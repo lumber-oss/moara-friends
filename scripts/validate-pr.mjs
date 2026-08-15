@@ -1,9 +1,9 @@
 // scripts/validate-pr.mjs
-// PR 校验逻辑（被 auto-pr.yml 的 triage 和 recheck job 共用）
+// PR 校验逻辑（被 auto-pr.yml 的 triage job 调用）
 //
 // 用法（在 GitHub Actions 的 actions/github-script@v7 里）：
 //   const { runValidation } = await import('./scripts/validate-pr.mjs');
-//   await runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core, closeOnFail: true });
+//   await runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core });
 //
 // 注意：actions/github-script 默认用 CommonJS，需要用 dynamic import 引入 ESM 文件
 
@@ -252,11 +252,10 @@ function getHostname(urlStr) {
 }
 
 // ========== 主校验流程 ==========
-export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core, closeOnFail = true, isRecheck = false }) {
+export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core }) {
   const SITE_URL = 'https://blog.945426.xyz';
 
   async function closePR() {
-    if (!closeOnFail) return;
     try {
       await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
     } catch (e) {
@@ -279,9 +278,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }),
       '',
       '---',
-      isRecheck
-        ? '修改后再次评论 `/recheck` 重新校验。  '
-        : '修改后 push 到本 PR 会触发重新校验，或评论 `/recheck` 重新触发。  ',
+      '修改后 push 到本 PR 会触发重新校验。  ',
       `[查看 Action 运行日志](${runUrl})`,
     ].join('\n');
     try {
@@ -572,12 +569,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         '- 友链页还没添加本站链接，或链接 URL 不完全一致',
         '- 友链页是 JavaScript 动态渲染的（workflow 只抓静态 HTML）',
         '- 友链页需要登录或被防火墙拦截',
-        '- CDN 缓存返回了旧版本（等待几分钟后再 push 或评论 `/recheck`）',
+        '- CDN 缓存返回了旧版本（等待几分钟后再 push）',
         '',
         '**修复方法**：',
         `1. 在你的友链页添加：<a href="${SITE_URL}">沫然Blog</a>`,
         '2. 确保 href 是绝对链接且 URL 完全一致',
-        '3. push 更新本 PR，或评论 `/recheck` 重新触发校验',
+        '3. push 更新本 PR 触发重新校验',
       ];
       await fail('反链验证未通过', lines);
       return;

@@ -1,81 +1,36 @@
 # moara-friends
 
-MOARA 博客的友链数据源 —— 单文件一条 + GitHub Action 自动校验 + 反链验证 + 自动合并，jsDelivr 分发。
+沫然Blog 的友链仓库。提交 PR 即可添加友链，自动校验、自动合并。
 
-## 工作流程
+## 怎么添加友链
 
-```
-贡献者 → Fork → 在 data/friends/ 新建 JSON（含 backlink 字段）→ PR
-                                                              │
-                                                    ┌─────────▼──────────┐
-                                                    │ auto-pr.yml        │
-                                                    │  · 单文件校验       │
-                                                    │  · JSON schema      │
-                                                    │  · vip 字段拒绝     │
-                                                    │  · URL 可达性检查    │
-                                                    │  · 反链验证：        │
-                                                    │    fetch backlink  │
-                                                    │    页面，找本站 URL │
-                                                    └─────┬───────┬──────┘
-                                                          │       │
-                                        ┌──── 失败 ───────┘       └──── 通过 ────┐
-                                        │                                         │
-                             ┌──────────▼──────────┐               ┌────────────▼────────────┐
-                             │ 评论失败原因 + 关闭 PR │               │ 自动 squash merge        │
-                             │ 贡献者收到 closed 邮件 │               │ 触发 build workflow      │
-                             └─────────────────────┘               │ friends.json 自动更新    │
-                                                                   └─────────────────────────┘
+### 1. 先在你的友链页加上我的链接
+
+在你的网站的友链页面，添加一个指向本站的链接：
+
+```html
+<a href="https://blog.945426.xyz/">沫然Blog</a>
 ```
 
-## 目录结构
+或 Markdown：
 
-```
-moara-friends/
-├── data/
-│   └── friends/              # 每文件一条友链
-│       └── moara.json        # 示例（站主自己）
-├── scripts/
-│   └── build.js              # 合并 + 排序脚本
-├── .github/workflows/
-│   ├── build.yml             # main 分支 push 触发，重建 friends.json
-│   └── auto-pr.yml           # PR 校验 + 反链验证 + 自动合并
-├── friends.json              # build 产物，jsDelivr 直接读取
-├── package.json
-└── README.md
+```markdown
+[沫然Blog](https://blog.945426.xyz/)
 ```
 
-## 添加友链
+**这一步必须先做**——提交 PR 时会自动检查你的友链页有没有我的链接，没有的话 PR 会被拒绝。
 
-### 步骤
+### 2. Fork 仓库
 
-1. **先在你的网站友链页添加本站链接**（必须，否则反链验证会失败）：
+点右上角 Fork，把仓库复制到你的账号下。
 
-   ```html
-   <a href="https://blog.945426.xyz/">沫然Blog</a>
-   ```
+### 3. 新建友链文件
 
-   或 Markdown：
-   ```markdown
-   [沫然Blog](https://blog.945426.xyz/)
-   ```
+在你的 Fork 里，进入 `data/friends/` 目录，新建一个 JSON 文件。文件名随意，建议用你的站点名（如 `example.json`）。
 
-   ⚠️ href 必须是 `https://blog.945426.xyz` 或 `https://blog.945426.xyz/`（带不带尾斜杠都行，workflow 会归一化）
+### 4. 填写友链信息
 
-2. **Fork** 本仓库
-3. 在 `data/friends/` 目录下新建一个 JSON 文件（文件名随意，建议用站点名，如 `example.json`）
-4. 按下面模板填写（**`backlink` 字段填你自己网站的友链页 URL**）
-5. 提交代码，创建 Pull Request
-6. workflow 自动校验 + 反链验证，通过后自动合并，数分钟后 jsDelivr 缓存刷新
-
-### 站主直推 main（仅站主）
-
-站主可直接 commit 到 main 分支，可以给特定友链加 `vip: true`。直推 main 不需要 `backlink` 字段。
-
-> ⚠️ 通过 PR 提交时**不能**携带 `vip` 字段，会被 workflow 拒绝。
-
-## 数据格式
-
-### 完整模板
+按下面的模板填写：
 
 ```json
 {
@@ -83,136 +38,51 @@ moara-friends/
   "avatar": "https://.../头像.png",
   "description": "一句话简介",
   "url": "https://你的站点/",
-  "backlink": "https://你的站点/friends/"
+  "backlink": "https://你的站点/友链页地址/"
 }
 ```
 
-### 最小可用
+### 5. 提交 PR
 
-```json
-{
-  "name": "你的站点名",
-  "url": "https://你的站点/",
-  "backlink": "https://你的站点/friends/"
-}
-```
+提交代码，创建 Pull Request。机器人会自动校验：
 
-### 字段说明
+- ✅ 检查你的友链页有没有 `https://blog.945426.xyz` 链接
+- ✅ 检查你的站点和头像能否访问
+- ✅ 检查 JSON 格式是否正确
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `name` | string | ✅ | 站点名称 |
-| `url` | string | ✅ | 站点 URL，必须以 `http://` 或 `https://` 开头 |
-| `backlink` | string | ✅（PR） | **你的友链页 URL**，必须与 `url` 主域名一致。workflow 会抓取此页面检查是否包含本站链接 |
-| `avatar` | string \| null | ❌ | 头像 URL，建议正方形。缺失时前端可用 favicon 服务兜底 |
-| `description` | string | ❌ | 一句话简介 |
-| `vip` | boolean | ❌ | **仅站主直推 main 时可用**。PR 携带会被自动拒绝 |
+全部通过 → 自动合并，几分钟后友链就会出现在我的博客上。
 
-> 📝 `backlink` 字段只用于 PR 反链验证，不会写入输出的 `friends.json`（前端不需要这个字段）。
+校验失败 → 会在 PR 里评论告诉你哪里不对，改完 push 一下会重新校验。
 
-## 校验规则
+## 字段说明
 
-PR 提交后，`auto-pr.yml` 会执行以下校验：
-
-1. **单文件**：PR 只能修改 `data/friends/` 下**一个** `.json` 文件
-2. **schema**：`name`/`url`/`backlink` 必填、`url`/`backlink` 必须是 http(s)、`avatar` 必须是字符串或 null
-3. **vip 拒绝**：PR 中检测到 `vip` 字段立即终止
-4. **域名一致性**：`backlink` 的主域名必须与 `url` 主域名一致（防伪造）
-5. **backlink 不能指向本站**：防止填错
-6. **SSRF 防护**：拒绝 localhost / 私有 IP（10.x / 172.16-31.x / 192.168.x）/ 链路本地（169.254.x，含云元数据）/ IPv6 回环 / IPv4-mapped IPv6 等
-7. **URL 可达性**：多 UA 轮换 + 3 次重试 + Content-Type 校验（avatar 必须是 image/*）
-8. **反链验证**：fetch `backlink` 页面 HTML，用正则提取所有 `href`，检查是否包含 `https://blog.945426.xyz`
-
-### 失败时
-
-- 评论错误清单 + 修复指引 + Action 日志链接
-- **PR 保持打开**（不自动关闭）
-- 贡献者收到评论邮件（仅 1 封）
-- 修复后 push 到本 PR 会自动触发重新校验；若不想继续，由人工手动关闭
-
-### 成功时
-
-- 自动 squash merge 到 main
-- 触发 build workflow 重建 friends.json
-- jsDelivr CDN 缓存数分钟内刷新
-- 不发评论（GitHub 默认会发 merged 邮件给贡献者）
-
-### 重新触发校验
-
-PR 保持打开期间，贡献者可以通过以下方式触发重新校验：
-- **push 新 commit 到 PR head 分支**（触发 `synchronize` 事件，自动校验最新 commit SHA）
-- **关闭后重新打开 PR**（触发 `reopened` 事件）
-
-校验始终基于 PR head 的最新 commit SHA。
-
-## 反链验证细节
-
-### 工作原理
-
-1. workflow fetch 贡献者提供的 `backlink` URL（多 UA + 3 次重试 + 15s 超时）
-2. 从 HTML 中用正则提取所有 `href="..."` 链接
-3. 归一化处理（小写、去尾斜杠、处理 `\/` 转义、`&amp;` 实体等）
-4. 检查是否有链接等于 `https://blog.945426.xyz`（或带尾斜杠）
-5. 找到 → 通过；未找到 → 失败并告知原因
-
-### 静态 HTML 限制
-
-workflow 只抓取静态 HTML，**不执行 JavaScript**。如果友链页是 SPA 或 JS 动态渲染的，反链验证可能失败。解决方案：
-
-- 用 SSR / SSG（推荐）
-- 或在静态 HTML 中预渲染友链链接（如构建时生成）
-- 或在 HTML 中放一个隐藏的 `<a href="https://blog.945426.xyz/" style="display:none">沫然Blog</a>`
-
-## 邮件通知机制
-
-依赖 GitHub 默认通知行为，workflow 不发额外邮件：
-
-| 事件 | 接收者 | 机制 |
+| 字段 | 必填 | 说明 |
 |---|---|---|
-| 贡献者开 PR | watch 仓库的人 | GitHub PR 创建通知 |
-| 校验失败 | 贡献者 | PR 作者自动 participating + 评论 + closed |
-| 校验通过 + 自动合并 | 贡献者 | PR 作者自动 participating + merged |
+| `name` | ✅ | 站点名称 |
+| `url` | ✅ | 站点地址，必须以 `http://` 或 `https://` 开头 |
+| `backlink` | ✅ | **你的友链页地址**（用来验证你有没有加我链接） |
+| `avatar` | ❌ | 头像图片地址，建议正方形 |
+| `description` | ❌ | 一句话简介 |
 
-> ⚠️ 2025-05-18 起 GitHub 默认关闭"自动 watch 自己创建的仓库"。如果 owner 没手动 watch 本仓库，PR 创建时可能收不到邮件——但反链验证 + 自动合并的流程不依赖 owner 通知。
+> `backlink` 填你自己网站上那个友链页的地址，不是首页。比如你的友链页是 `https://example.com/friends/`，就填这个。
 
-## 排序规则
+## 常见问题
 
-构建时按以下顺序排序：
+**Q: 校验提示"反链验证未通过"怎么办？**
 
-1. `vip: true` 的条目优先
-2. 同级按 `name` 的拼音排序（`zh-CN` locale）
+A: 说明你的友链页里没找到 `https://blog.945426.xyz` 这个链接。请确认：
+1. 链接已经添加到友链页（不是首页）
+2. 链接地址是 `https://blog.945426.xyz` 或 `https://blog.945426.xyz/`
+3. 如果你的友链页是 JavaScript 动态渲染的，等几分钟让 CDN 缓存刷新后再重新 push
 
-排序稳定，保证 jsDelivr 缓存命中率。
+**Q: 头像怎么填？**
 
-## 不做的事
+A: 填一个能直接访问的图片 URL，建议正方形。可以用 GitHub 头像、图床等。没有头像可以不填这个字段。
 
-- ❌ DNS 所有权验证
-- ❌ Playwright 渲染（用纯 fetch 静态 HTML）
-- ❌ 爬虫 / 友链朋友圈
-- ❌ feed / RSS 抓取
-- ❌ 成功评论 / 欢迎评论 / 进度评论
-- ❌ workflow 自定义邮件（依赖 GitHub 默认通知）
+**Q: 改了信息怎么更新？**
 
-## jsDelivr 缓存
+A: 同样提 PR 修改你的 JSON 文件就行。
 
-jsDelivr CDN 缓存约 12 小时。强制刷新：
+**Q: PR 提交后多久能合并？**
 
-```
-https://purge.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json
-```
-
-或在 URL 后加版本号绕过缓存：
-
-```
-https://cdn.jsdelivr.net/gh/moaradc/moara-friends@<commit-sha>/friends.json
-```
-
-## 前端集成
-
-主站只需在 `vercel.json` 加一条 rewrite，或在 JS 中直接 fetch：
-
-```js
-fetch('https://cdn.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json')
-  .then(r => r.json())
-  .then(friends => { /* 渲染卡片 */ });
-```
+A: 校验通过会立即自动合并，几分钟后 jsDelivr CDN 缓存刷新就能在我的博客看到。

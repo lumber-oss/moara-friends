@@ -368,22 +368,34 @@ jobs:
                 '正在读取文件内容...',
               ].join('\n'));
 
+              // 通过 PR files API 已返回的 patch 字段拿文件内容
+              // 比 getContent 更稳定（getContent 在 pull_request_target 事件下
+              // 对 fork PR 的 head ref 可能 404）
               let rawContent = '';
-              try {
-                const res = await github.rest.repos.getContent({
-                  owner: prHead.repo.owner,
-                  repo: prHead.repo.name,
-                  path: file.filename,
-                  ref: prHead.ref,
-                });
-                if (Array.isArray(res.data) || !res.data.content) {
-                  throw new Error('响应缺少 content 字段');
+              if (file.patch) {
+                // 解析 unified diff patch：去掉 @@ 行首，去掉 +/-/前缀空格
+                rawContent = file.patch
+                  .split('\n')
+                  .filter((line) => !line.startsWith('@@') && !line.startsWith('---') && !line.startsWith('+++'))
+                  .map((line) => (line.startsWith('+') ? line.slice(1) : line.startsWith(' ') ? line.slice(1) : line))
+                  .join('\n')
+                  .trim();
+              } else if (file.status === 'added' || file.status === 'modified') {
+                // patch 字段为空（大文件或 API 异常），回退到 raw_url 拉取
+                try {
+                  const res = await fetch(file.raw_url, {
+                    headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+                  });
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  rawContent = await res.text();
+                } catch (e) {
+                  await postResult(false, '无法读取文件内容', [
+                    `错误：${e.message}`,
+                    `raw_url: ${file.raw_url}`,
+                  ]);
+                  await closePR();
+                  return;
                 }
-                rawContent = Buffer.from(res.data.content, res.data.encoding || 'base64').toString('utf-8');
-              } catch (e) {
-                await postResult(false, '无法读取文件内容', [`错误：${e.message}`]);
-                await closePR();
-                return;
               }
 
               await upsertProgress([

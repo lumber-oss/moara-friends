@@ -19,7 +19,16 @@ name: auto-pr
 #
 # 评论策略：
 #   - 失败时发 1 条评论告知错误清单 + Action 日志链接，然后关闭 PR
-#   - 成功时不评论，直接 squash merge + 触发 build workflow
+#     （贡献者作为 PR 作者自动 participating，会收到 closed 邮件 + 评论邮件）
+#   - 成功时发 1 条评论 @owner 请求人工审核，不自动合并
+#     （@mention 会触发 GitHub participating 通知，owner 必收到邮件）
+#     owner 手动 merge 后，贡献者自动收到 merged 邮件
+#
+# 邮件链路（依赖 GitHub 默认行为，不需 workflow 干预）：
+#   - 贡献者开 PR → GitHub 给 watch 仓库的人发 PR 创建邮件
+#   - workflow 校验通过 → 评论 @owner → owner 收到 mention 邮件
+#   - owner 手动 merge → 贡献者作为 PR 作者自动收到 merged 邮件
+#   - workflow 校验失败 → 评论 + 关闭 PR → 贡献者收到 closed 邮件
 #
 # 不做（按用户要求）：
 #   - 双向链接验证（爬 backlink 页面）
@@ -27,7 +36,11 @@ name: auto-pr
 #   - Playwright 渲染
 #   - 爬虫
 #   - feed 字段
-#   - 成功评论 / 欢迎评论 / 进度评论
+#   - 成功评论 / 欢迎评论 / 进度评论（改为人工审核提醒）
+#   - 自动合并（改为人工审核）
+#
+# OWNER 配置：下方 OWNER_LOGIN 常量，需要改为你的 GitHub 账号名
+# （用于 @mention 触发审核邮件）
 
 on:
   pull_request_target:
@@ -60,6 +73,10 @@ jobs:
             const pull_number = context.payload.pull_request.number;
             const prHead = context.payload.pull_request.head;
             const prAuthor = context.payload.pull_request.user.login;
+
+            // 仓库 owner 登录名，用于 @mention 触发审核邮件
+            // 改成你的 GitHub 账号名（这里 moaradc 是仓库 owner）
+            const OWNER_LOGIN = 'moaradc';
 
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
@@ -296,9 +313,10 @@ jobs:
               return;
             }
 
-            // ── 2. 删除操作：跳过内容校验，直接合并 ───────────
+            // ── 2. 删除操作：跳过内容校验 ────────────────────
+            // 删除友链是站主自己的事，无需校验 schema/url，但仍走人工审核流程
             if (file.status === 'removed') {
-              core.info('删除操作，跳过校验，准备合并');
+              core.info('删除操作，跳过内容校验，转人工审核');
             } else {
               // ── 3. JSON 解析与 schema 校验 ─────────────────
               if (!file.filename.endsWith('.json')) {
@@ -421,33 +439,33 @@ jobs:
               }
             }
 
-            // ── 6. 自动合并 ────────────────────────────────────
-            core.info('✅ 所有校验通过，执行自动合并');
+            // ── 6. 请求人工审核（不自动合并）─────────────────
+            // 校验通过后评论 @owner 请求审核，@mention 会触发 GitHub participating 通知
+            // owner 收到邮件后手动 merge / close，贡献者自动收到结果邮件
+            core.info('✅ 所有校验通过，请求人工审核');
 
+            const elapsed = Math.round((Date.now() - Date.parse(context.payload.pull_request.created_at)) / 1000);
+            const reviewBody = [
+              `## ✅ 自动校验通过，等待人工审核`,
+              ``,
+              `@${OWNER_LOGIN} 这个友链 PR 已通过全部自动校验：`,
+              ``,
+              `- 📁 文件路径合法：\`${file.filename}\``,
+              `- 📋 JSON schema 校验通过`,
+              `- 🚫 vip 字段检查通过`,
+              `- 🌐 URL 可达性检查通过`,
+              ``,
+              `**请人工确认对方是否已添加本站友链**（防止单方面挂友链），确认后点击合并即可。`,
+              ``,
+              `---`,
+              `⏱️ 校验耗时：${elapsed}s  `,
+              `[查看 Action 运行日志](${runUrl})`,
+            ].join('\n');
             try {
-              const mergeRes = await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number,
-                merge_method: 'squash',
-                commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
-                commit_message: `由 auto-pr workflow 自动合并\n\nCo-authored-by: ${prAuthor}`,
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pull_number, body: reviewBody,
               });
-              core.info(`✅ 合并成功：${mergeRes.data.sha}`);
-
-              // 触发 build workflow（GITHUB_TOKEN 触发的 push 不会自动触发其他 workflow，
-              // 需要 workflow_dispatch 手动启动）
-              try {
-                await github.rest.actions.createWorkflowDispatch({
-                  owner,
-                  repo,
-                  workflow_id: 'build.yml',
-                  ref: 'main',
-                });
-                core.info('✅ build workflow 已触发');
-              } catch (e) {
-                core.warning(`trigger build workflow failed: ${e.message}`);
-              }
+              core.info('✅ 审核请求评论已发送');
             } catch (e) {
-              await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系仓库管理员。']);
+              core.warning(`createComment failed: ${e.message}`);
             }

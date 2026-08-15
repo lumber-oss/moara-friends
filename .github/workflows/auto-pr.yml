@@ -1,32 +1,5 @@
 name: auto-pr
 
-# PR 校验 + 反链验证 + SSRF 防护 + 自动合并 workflow
-#
-# 触发：pull_request_target (opened/synchronize/reopened)
-#   ⚠️ 用 pull_request_target 而非 pull_request，因为贡献者从 fork 提 PR 时，
-#      pull_request 会以 fork 的 ref 跑代码，有安全风险；pull_request_target 用 base 的代码 + secrets。
-#   三种事件都拉取 PR head 最新 commit SHA 校验：
-#     - opened: PR 创建
-#     - synchronize: 贡献者 push 新 commit
-#     - reopened: PR 重新打开
-#
-# 校验维度：
-#   1. PR 只能改 data/friends/ 下单个 .json 文件
-#   2. JSON schema（name/url/backlink 必填等）
-#   3. vip 字段拒绝（反作弊）
-#   4. SSRF 防护：拒绝 localhost / 私有 IP / 链路本地 / 云元数据等
-#   5. backlink 主域名必须与 url 主域名一致
-#   6. backlink 不能指向本站
-#   7. URL + avatar 可达性检查（多 UA + 重试 + Content-Type）
-#   8. 反链验证：先 fetch 静态 HTML，找不到则 fallback 到 Playwright 渲染（处理 JS 动态渲染的友链页）
-#
-# 评论策略：
-#   - 失败时发 1 条评论告知错误清单 + Action 日志链接，PR 保持打开（不自动关闭）
-#     贡献者修复后 push 会自动触发重新校验；若不想继续，由人工手动关闭
-#   - 成功时直接自动 squash merge + 触发 build workflow，不评论
-#
-# 校验逻辑在 scripts/validate-pr.mjs
-
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
@@ -34,7 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: write  # 用于触发 build workflow (createWorkflowDispatch)
+  actions: write
 
 env:
   PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -46,7 +19,7 @@ concurrency:
 jobs:
   triage:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Playwright 渲染可能较慢，从 10 提到 15
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,7 +32,6 @@ jobs:
           node-version: '20'
 
       - name: Install Playwright
-        # 用于反链验证时渲染 JS 动态页面（CSR/SPA 友链页）
         run: |
           npm install -D @playwright/test
           npx playwright install chromium --with-deps

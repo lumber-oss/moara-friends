@@ -1,12 +1,3 @@
-// scripts/validate-pr.mjs
-// PR 校验逻辑（被 auto-pr.yml 的 triage job 调用）
-//
-// 用法（在 GitHub Actions 的 actions/github-script@v7 里）：
-//   const { runValidation } = await import('./scripts/validate-pr.mjs');
-//   await runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core });
-//
-// 注意：actions/github-script 默认用 CommonJS，需要用 dynamic import 引入 ESM 文件
-
 // ========== SSRF 防护 ==========
 export function isPublicUrl(urlStr) {
   let u;
@@ -103,12 +94,6 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
 }
 
 // Playwright 渲染抓取（处理 JS 动态渲染的友链页）
-// 参考 afoim/af_friends-data 的实现，含 5 项健壮性优化：
-//   1. 关闭 webdriver 标记 + 反检测脚本（避免 WAF 拦截）
-//   2. 真实 Chrome UA（避免 bot 检测）
-//   3. domcontentloaded 代替 networkidle（防 WebSocket 长连接卡死）
-//   4. waitForLoadState('networkidle', {timeout: 5000}) + 超时不报错（SPA 渲染缓冲）
-//   5. 失败重试 1 次（chromium crash / 网络抖动容错）
 async function fetchWithPlaywright(url) {
   const { execFileSync } = await import('node:child_process');
   const fs = await import('node:fs');
@@ -119,7 +104,6 @@ async function fetchWithPlaywright(url) {
     import { chromium } from '@playwright/test';
     const targetUrl = process.argv[2];
 
-    // 真实 Chrome UA（借鉴点 2）
     const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
     async function fetchOnce() {
@@ -127,7 +111,7 @@ async function fetchWithPlaywright(url) {
       try {
         browser = await chromium.launch({
           headless: true,
-          args: ['--disable-blink-features=AutomationControlled'],  // 借鉴点 1：关闭自动化标记
+          args: ['--disable-blink-features=AutomationControlled'],
         });
         const context = await browser.newContext({
           userAgent: CHROME_UA,
@@ -139,10 +123,8 @@ async function fetchWithPlaywright(url) {
           },
         });
 
-        // 借鉴点 1：反检测脚本——隐藏 webdriver 标记
         await context.addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          // 覆盖 plugins / languages 让 fingerprint 更像真实浏览器
           Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
           Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
           window.chrome = { runtime: {} };
@@ -150,13 +132,11 @@ async function fetchWithPlaywright(url) {
 
         const page = await context.newPage();
 
-        // 借鉴点 3：domcontentloaded 代替 networkidle，防 WebSocket / 统计上报长连接卡死
         const response = await page.goto(targetUrl, {
           waitUntil: 'domcontentloaded',
           timeout: 30000,
         });
 
-        // 借鉴点 4：再等几秒 networkidle 给 SPA 渲染缓冲，超时不报错用当前 DOM 继续
         try {
           await page.waitForLoadState('networkidle', { timeout: 5000 });
         } catch {}
@@ -172,10 +152,9 @@ async function fetchWithPlaywright(url) {
       }
     }
 
-    // 借鉴点 5：失败重试 1 次
     let result = await fetchOnce();
     if (!result.ok) {
-      await new Promise(r => setTimeout(r, 2000));  // 间隔 2 秒
+      await new Promise(r => setTimeout(r, 2000));
       result = await fetchOnce();
     }
     console.log(JSON.stringify(result));
@@ -354,18 +333,10 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   const SITE_URL = 'https://blog.945426.xyz';
 
   // ========== Tag 管理 ==========
-  // Tag 设计：
-  //   友链    — 所有友链 PR 都打（固定，不删除）
-  //   已互链  — 校验通过 + 合并成功后打
-  //   未通过  — 校验失败时打
-  //
-  // 成功时：打 [友链, 已互链]，删除 [未通过]
-  // 失败时：打 [友链, 未通过]，删除 [已互链]
   const LABEL_FRIEND = '友链';
   const LABEL_OK = '已互链';
   const LABEL_FAIL = '未通过';
 
-  // 确保 label 存在（不存在则创建，指定颜色）
   async function ensureLabel(name, color) {
     try {
       await github.rest.issues.getLabel({ owner, repo, name });
@@ -383,15 +354,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
   }
 
-  // 同步 tag：addLabels 打上指定的，removeLabel 删除对立的
   async function syncLabels({ add = [], remove = [] }) {
-    // 先确保要添加的 label 都存在
     const labelColors = { [LABEL_FRIEND]: '0e8a16', [LABEL_OK]: '0e8a16', [LABEL_FAIL]: 'd73a4a' };
     for (const name of add) {
       await ensureLabel(name, labelColors[name] || 'ededed');
     }
 
-    // 打 tag
     if (add.length) {
       try {
         await github.rest.issues.addLabels({
@@ -403,7 +371,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }
     }
 
-    // 删 tag（PR 上可能没有这个 tag，404 时忽略）
     for (const name of remove) {
       try {
         await github.rest.issues.removeLabel({
@@ -418,7 +385,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
   }
 
-  // 失败辅助：记录日志 + 发评论 + 打 tag（不自动关闭 PR，由人工处理）
   async function fail(title, lines) {
     core.error(`❌ ${title}`);
     for (const l of lines) core.error(`  - ${l}`);
@@ -443,7 +409,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       core.warning(`createComment failed: ${e.message}`);
     }
 
-    // 失败时打 [友链, 未通过]，删除 [已互链]
     await syncLabels({ add: [LABEL_FRIEND, LABEL_FAIL], remove: [LABEL_OK] });
   }
 
@@ -484,9 +449,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     return;
   }
 
-  // ── 2. 删除操作：跳过内容校验，直接合并 ───────────
+  // ── 2. 删除操作：跳过内容校验 ────────────────────
   if (file.status === 'removed') {
-    core.info('删除操作，跳过校验，准备合并');
+    core.info('删除操作，跳过校验');
   } else {
     // ── 3. JSON 解析与 schema 校验 ─────────────────
     if (!file.filename.endsWith('.json')) {
@@ -620,7 +585,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 5. SSRF 防护：检查 url / avatar / backlink ──
+    // ── 5. SSRF 防护 ────────────────────────────────
     const ssrfErrors = [];
     const urlSsrf = isPublicUrl(data.url);
     if (!urlSsrf.ok) ssrfErrors.push(`\`url\`：${urlSsrf.reason}`);
@@ -697,8 +662,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 8. 反链验证（两层 fallback）─────────────────
-    // 先用 fetch 抓静态 HTML（快），找不到反链再用 Playwright 渲染（处理 JS 动态页面）
+    // ── 8. 反链验证 ────────────────────────────────
     core.info(`🔗 正在抓取 backlink 页面检查反链：${data.backlink}`);
 
     const pageRes = await fetchPage(data.backlink);
@@ -717,7 +681,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     let backlinkResult = verifyBacklink(pageRes.text, SITE_URL);
     let usedPlaywright = false;
 
-    // 静态 HTML 没找到反链 → fallback 到 Playwright 渲染
     if (!backlinkResult.found) {
       core.info(`⚠️ 静态 HTML 未找到反链，尝试用 Playwright 渲染（处理 JS 动态页面）...`);
       const pwRes = await fetchWithPlaywright(data.backlink);
@@ -772,7 +735,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     });
     core.info(`✅ 合并成功：${mergeRes.data.sha}`);
 
-    // 成功时打 [友链, 已互链]，删除 [未通过]
     await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_FAIL] });
 
     try {

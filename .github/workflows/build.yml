@@ -1,0 +1,53 @@
+name: build
+
+# push 到 main 后，扫描 data/friends/*.json → 生成 friends.json → commit 回 main
+# jsDelivr 直接读取 main 分支根目录的 friends.json，零外部部署
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'data/friends/**'
+      - 'scripts/build.js'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-friends
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 用 PAT 提交时不会触发后续 workflow，避免循环
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build friends.json
+        run: node scripts/build.js
+
+      - name: Commit friends.json if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- friends.json; then
+            echo "✓ friends.json 未变化，跳过提交"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add friends.json
+          git commit -m "chore: rebuild friends.json [skip ci]"
+          git push
+          echo "✓ friends.json 已推送，jsDelivr 缓存会在数分钟内刷新"

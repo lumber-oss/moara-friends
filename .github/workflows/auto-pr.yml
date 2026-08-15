@@ -1,0 +1,289 @@
+name: auto-pr
+
+# PR 校验 + 自动合并 workflow
+#
+# 触发：pull_request_target (opened/synchronize/reopened)
+#   ⚠️ 用 pull_request_target 而非 pull_request，因为贡献者从 fork 提 PR 时，
+#      pull_request 会以 fork 的 ref 跑代码，有安全风险；pull_request_target 用 base 的代码 + secrets。
+#
+# 校验维度（按用户要求精简）：
+#   1. PR 只能改 data/friends/ 下单个 .json 文件
+#   2. JSON 必须是对象
+#   3. name 必填非空字符串
+#   4. url 必填、必须是 http/https URL
+#   5. avatar 可空、若提供必须是字符串
+#   6. description 可选、若提供必须是字符串
+#   7. vip 字段一律拒绝（PR 携带 vip 立即终止，防作弊）
+#   8. url 可达性 HEAD 检查（轻量 fetch，5 秒超时）
+#   9. avatar 可达性 HEAD 检查（同上，avatar 为 null 则跳过）
+#
+# 不做（按用户要求）：
+#   - 双向链接验证（爬 backlink 页面）
+#   - DNS 所有权验证
+#   - Playwright 渲染
+#   - 爬虫
+#   - 评论告知（除了校验失败的最低限度错误信息，避免贡献者盲等）
+#   - feed 字段
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  PAT: ${{ secrets.GITHUB_TOKEN }}
+
+concurrency:
+  group: auto-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            const prHead = context.payload.pull_request.head;
+            const prAuthor = context.payload.pull_request.user.login;
+            const isFromFork = prHead.repo.full_name !== `${owner}/${repo}`;
+
+            // ── 最低限度反馈函数 ─────────────────────────────
+            // 失败时只评论一次错误清单，不在每个步骤重复评论
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            async function reportFailure(title, lines) {
+              const body = [
+                `## ❌ ${title}`,
+                '',
+                ...lines.map((l) => `- ${l}`),
+                '',
+                '---',
+                `修改后 push 到本 PR 即可触发重新校验。  `,
+                `[查看 Action 运行日志](${runUrl})`,
+              ].join('\n');
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
+              } catch (e) {
+                core.warning(`createComment failed: ${e.message}`);
+              }
+              // 失败时关闭 PR，避免主分支堆积僵尸 PR
+              try {
+                await github.rest.pulls.update({
+                  owner, repo, pull_number,
+                  state: 'closed',
+                });
+              } catch (e) {
+                core.warning(`close PR failed: ${e.message}`);
+              }
+            }
+
+            // ── 1. PR 文件变更范围校验 ─────────────────────────
+            let files = [];
+            try {
+              for await (const res of github.paginate.iterator(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              )) {
+                files.push(...res.data);
+              }
+            } catch (e) {
+              await reportFailure('无法读取 PR 文件清单', [`错误：${e.message}`]);
+              return;
+            }
+
+            if (files.length !== 1) {
+              await reportFailure('PR 只能包含一个文件变更', [
+                `当前变更数：${files.length}`,
+                '请保证每个 PR 仅新增/修改/删除 data/friends/ 下单个 .json 文件。',
+              ]);
+              return;
+            }
+
+            const file = files[0];
+            const FRIENDS_PREFIX = 'data/friends/';
+            if (!file.filename.startsWith(FRIENDS_PREFIX)) {
+              await reportFailure('文件路径不合法', [
+                `检测到文件：${file.filename}`,
+                `只允许更改 ${FRIENDS_PREFIX} 下的文件。`,
+              ]);
+              return;
+            }
+
+            if (!['added', 'modified', 'removed'].includes(file.status)) {
+              await reportFailure('不支持的文件操作', [`status: ${file.status}`]);
+              return;
+            }
+
+            // ── 2. 删除操作：跳过内容校验，直接合并 ───────────
+            // （删除友链是站主自己的事，不卡校验）
+            if (file.status === 'removed') {
+              core.info('删除操作，跳过校验，准备合并');
+            } else {
+              // ── 3. JSON 解析与 schema 校验 ─────────────────
+              if (!file.filename.endsWith('.json')) {
+                await reportFailure('文件类型不合法', [
+                  `检测到非 .json 文件：${file.filename}`,
+                  'data/friends/ 下只允许 .json 文件。',
+                ]);
+                return;
+              }
+
+              let rawContent = '';
+              try {
+                // 通过 PR head ref 拉取文件内容（不是 main 分支的内容）
+                const res = await github.rest.repos.getContent({
+                  owner: prHead.repo.owner,
+                  repo: prHead.repo.name,
+                  path: file.filename,
+                  ref: prHead.ref,
+                });
+                if (Array.isArray(res.data) || !res.data.content) {
+                  throw new Error('响应缺少 content 字段');
+                }
+                rawContent = Buffer.from(res.data.content, res.data.encoding || 'base64').toString('utf-8');
+              } catch (e) {
+                await reportFailure('无法读取文件内容', [`错误：${e.message}`]);
+                return;
+              }
+
+              let data;
+              try {
+                data = JSON.parse(rawContent);
+              } catch (e) {
+                await reportFailure('JSON 解析失败', [
+                  `文件：${file.filename}`,
+                  `错误：${e.message}`,
+                ]);
+                return;
+              }
+
+              if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                await reportFailure('JSON 类型错误', ['JSON 必须是对象，不能是数组或基本类型。']);
+                return;
+              }
+
+              const errs = [];
+              const isNonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
+              const isNullOrString = (v) => v === null || typeof v === 'string';
+              const isHttpUrl = (v) => {
+                if (typeof v !== 'string') return false;
+                try {
+                  const u = new URL(v);
+                  return u.protocol === 'http:' || u.protocol === 'https:';
+                } catch { return false; }
+              };
+
+              if (!isNonEmptyString(data.name)) errs.push('`name` 必填且为非空字符串');
+              if (!isNonEmptyString(data.url)) errs.push('`url` 必填且为非空字符串');
+              else if (!isHttpUrl(data.url)) errs.push('`url` 必须是 http/https URL');
+              if (data.avatar !== undefined && !isNullOrString(data.avatar))
+                errs.push('`avatar` 必须是字符串或 null（或省略）');
+              if (data.description !== undefined && typeof data.description !== 'string')
+                errs.push('`description` 必须是字符串（或省略）');
+
+              // ── 4. vip 反作弊：PR 一律拒绝 ───────────────
+              if (Object.prototype.hasOwnProperty.call(data, 'vip')) {
+                await reportFailure('检测到 vip 字段，已终止', [
+                  'vip 字段仅站主直推 main 时可用，PR 不可携带。',
+                  `文件：${file.filename}`,
+                  '请删除 vip 字段后重新 push。',
+                ]);
+                return;
+              }
+
+              if (errs.length) {
+                await reportFailure('数据校验未通过', [`文件：${file.filename}`, ...errs]);
+                return;
+              }
+
+              // ── 5. URL 可达性 HEAD 检查 ────────────────────
+              // 轻量 fetch，5 秒超时，跟随重定向，只看最终状态码
+              async function checkUrl(url, label) {
+                try {
+                  const controller = new AbortController();
+                  const timer = setTimeout(() => controller.abort(), 5000);
+                  const res = await fetch(url, {
+                    method: 'HEAD',
+                    redirect: 'follow',
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'moara-friends-bot/1.0' },
+                  });
+                  clearTimeout(timer);
+                  if (res.status >= 200 && res.status < 400) {
+                    core.info(`✓ ${label} 可达: ${res.status} ${url}`);
+                    return null;
+                  }
+                  // HEAD 不被支持时，回退到 GET（部分图床/CDN 拒绝 HEAD）
+                  if (res.status === 405 || res.status === 403) {
+                    const c2 = new AbortController();
+                    const t2 = setTimeout(() => c2.abort(), 5000);
+                    const r2 = await fetch(url, {
+                      method: 'GET',
+                      redirect: 'follow',
+                      signal: c2.signal,
+                      headers: { 'User-Agent': 'moara-friends-bot/1.0' },
+                    });
+                    clearTimeout(t2);
+                    if (r2.status >= 200 && r2.status < 400) {
+                      core.info(`✓ ${label} 可达(GET fallback): ${r2.status} ${url}`);
+                      return null;
+                    }
+                    return `${label} 不可达: HTTP ${r2.status} (${url})`;
+                  }
+                  return `${label} 不可达: HTTP ${res.status} (${url})`;
+                } catch (e) {
+                  return `${label} 访问失败: ${e.message} (${url})`;
+                }
+              }
+
+              const reachErrors = [];
+              const urlCheck = await checkUrl(data.url, '站点 url');
+              if (urlCheck) reachErrors.push(urlCheck);
+
+              if (typeof data.avatar === 'string' && data.avatar.trim()) {
+                const avCheck = await checkUrl(data.avatar, '头像 avatar');
+                if (avCheck) reachErrors.push(avCheck);
+              }
+
+              if (reachErrors.length) {
+                await reportFailure('URL 可达性检查未通过', reachErrors);
+                return;
+              }
+            }
+
+            // ── 6. 全部通过，自动合并 ────────────────────────
+            core.info('✅ 所有校验通过，执行自动合并');
+
+            try {
+              // 用 squash merge，避免 PR commit 历史污染 main
+              const mergeRes = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number,
+                merge_method: 'squash',
+                commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
+                commit_message: `由 auto-pr workflow 自动合并\n\nCo-authored-by: ${prAuthor}`,
+              });
+              core.info(`✅ 合并成功：${mergeRes.data.sha}`);
+
+              // 合并成功提示（一次性，不重复）
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: `✅ 校验通过，已自动合并。稍后 build workflow 会重建 friends.json，jsDelivr 缓存会在数分钟内刷新。`,
+                });
+              } catch (e) {
+                core.warning(`success comment failed: ${e.message}`);
+              }
+            } catch (e) {
+              await reportFailure('自动合并失败', [`错误：${e.message}`]);
+            }

@@ -1,619 +1,169 @@
 name: auto-pr
 
-# PR 校验 + 反链验证 + 自动合并 workflow
+# PR 校验 + 反链验证 + SSRF 防护 + 自动合并 workflow
 #
-# 触发：pull_request_target (opened/synchronize/reopened)
-#   ⚠️ 用 pull_request_target 而非 pull_request，因为贡献者从 fork 提 PR 时，
-#      pull_request 会以 fork 的 ref 跑代码，有安全风险；pull_request_target 用 base 的代码 + secrets。
+# 触发：
+#   1. pull_request_target (opened/synchronize/reopened) - PR 事件
+#   2. issue_comment (created) - 评论 /recheck 或 /重新校验 重新触发校验
 #
 # 校验维度：
 #   1. PR 只能改 data/friends/ 下单个 .json 文件
-#   2. JSON 必须是对象
-#   3. name 必填非空字符串
-#   4. url 必填、必须是 http/https URL
-#   5. avatar 可空、若提供必须是字符串
-#   6. description 可选、若提供必须是字符串
-#   7. vip 字段一律拒绝（PR 携带 vip 立即终止，防作弊）
-#   8. backlink 必填：申请者的友链页 URL（http/https）
-#   9. backlink 主域名必须与 url 主域名一致（防伪造）
-#  10. backlink 不能指向本站
-#  11. URL 可达性检查（url + avatar）
-#  12. 反链验证：fetch backlink 页面，检查 HTML 中是否包含本站 URL
+#   2. JSON schema（name/url/backlink 必填等）
+#   3. vip 字段拒绝（反作弊）
+#   4. SSRF 防护：拒绝 localhost / 私有 IP / 链路本地 / 云元数据等
+#   5. backlink 主域名必须与 url 主域名一致
+#   6. backlink 不能指向本站
+#   7. URL + avatar 可达性检查（多 UA + 重试 + Content-Type）
+#   8. 反链验证：fetch backlink 页面 HTML，检查是否包含本站 URL
 #
-# 评论策略：
-#   - 失败时发 1 条评论告知错误清单 + Action 日志链接，然后关闭 PR
-#   - 成功时直接自动 squash merge + 触发 build workflow，不评论
+# 评论触发：
+#   - 在 PR 评论 /recheck 或 /重新校验 可重新触发校验
+#   - 仅 PR 作者或仓库协作者可触发（防滥用）
 #
-# 不做（按用户要求）：
-#   - DNS 所有权验证
-#   - Playwright 渲染（用纯 fetch 静态 HTML）
-#   - 爬虫 / 友链朋友圈
-#   - feed 字段
-#   - 成功评论 / 欢迎评论 / 进度评论
-#
-# 配置：下方 SITE_URL 改成你的主站 URL（反链验证时用这个去匹配对方页面）
+# 校验逻辑在 scripts/validate-pr.mjs，两个 job 共用
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
   pull-requests: write
-  actions: write  # 用于触发 build workflow (createWorkflowDispatch)
+  actions: write
 
 env:
   PAT: ${{ secrets.GITHUB_TOKEN }}
 
 concurrency:
-  group: auto-pr-${{ github.event.pull_request.number }}
+  group: auto-pr-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
   triage:
+    # PR 事件触发
+    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Validate PR
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.PAT }}
           script: |
+            const { runValidation } = await import('${{ github.workspace }}/scripts/validate-pr.mjs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pull_number = context.payload.pull_request.number;
             const prHead = context.payload.pull_request.head;
             const prAuthor = context.payload.pull_request.user.login;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            await runValidation({
+              owner, repo, pull_number, prHead, prAuthor, runUrl, github, core,
+              closeOnFail: true,
+            });
 
-            // ========== 配置 ==========
-            // 本站主站 URL，反链验证时会去对方页面找这个 URL
-            const SITE_URL = 'https://blog.945426.xyz';
+  recheck:
+    # 评论 /recheck 或 /重新校验 触发
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      (contains(github.event.comment.body, '/recheck') || contains(github.event.comment.body, '/重新校验'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
+      - name: Recheck via comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.PAT }}
+          script: |
+            const { runValidation } = await import('${{ github.workspace }}/scripts/validate-pr.mjs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const commenter = context.payload.comment.user.login;
+            const commentBody = context.payload.comment.body;
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
-            // 失败时关闭 PR
-            async function closePR() {
+            // 关键词检查（精确匹配，避免误触发）
+            const keywords = ['/recheck', '/重新校验'];
+            const trimmed = commentBody.trim();
+            const matched = keywords.some(k =>
+              trimmed === k || trimmed.startsWith(k + ' ') || trimmed.startsWith(k + '\n')
+            );
+            if (!matched) {
+              core.info(`评论不匹配关键词，跳过：${trimmed.slice(0, 50)}`);
+              return;
+            }
+            core.info(`✓ 匹配重新校验关键词`);
+
+            // 拉取 PR 信息
+            const pull_number = context.payload.issue.number;
+            let pr;
+            try {
+              const res = await github.rest.pulls.get({ owner, repo, pull_number });
+              pr = res.data;
+            } catch (e) {
+              core.warning(`无法获取 PR #${pull_number}: ${e.message}`);
+              return;
+            }
+
+            // 权限检查：仅 PR 作者或仓库协作者可触发
+            const prAuthor = pr.user.login;
+            let canTrigger = false;
+            if (commenter === prAuthor) {
+              canTrigger = true;
+              core.info(`✓ 评论者是 PR 作者：@${commenter}`);
+            } else {
               try {
-                await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
+                const permRes = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner, repo, username: commenter,
+                });
+                if (['admin', 'maintain', 'write'].includes(permRes.data.permission)) {
+                  canTrigger = true;
+                  core.info(`✓ 评论者是仓库协作者（${permRes.data.permission}）：@${commenter}`);
+                }
               } catch (e) {
-                core.warning(`close PR failed: ${e.message}`);
+                core.warning(`无法查询评论者权限：${e.message}`);
               }
             }
 
-            // 失败辅助：记录日志 + 发评论 + 关闭 PR
-            async function fail(title, lines) {
-              core.error(`❌ ${title}`);
-              for (const l of lines) core.error(`  - ${l}`);
-
-              const body = [
-                `## ❌ ${title}`,
-                '',
-                ...lines.map((l) => {
-                  if (l === '') return '';
-                  if (l.startsWith('```') || l.startsWith('    ')) return l;
-                  if (/^\s*([-*+]|\d+\.)\s/.test(l)) return l;
-                  return `- ${l}`;
-                }),
-                '',
-                '---',
-                '修改后 push 到本 PR 会触发重新校验。  ',
-                `[查看 Action 运行日志](${runUrl})`,
-              ].join('\n');
+            if (!canTrigger) {
+              core.warning(`✗ 评论者无权限：@${commenter}（PR 作者：@${prAuthor}）`);
               try {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: `@${commenter} 仅 PR 作者或仓库协作者可触发重新校验。`,
+                });
               } catch (e) {
                 core.warning(`createComment failed: ${e.message}`);
               }
-              await closePR();
-            }
-
-            // ========== 可达性检查 ==========
-            const USER_AGENTS = [
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
-              'Mozilla/5.0 (compatible; Googlebot/2.1; +https://www.google.com/bot.html)',
-            ];
-
-            function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-            // 抓取 URL，返回 { ok, status, text, finalUrl } 或 { ok: false, errors }
-            // 用于反链验证：抓 backlink 页面 HTML
-            async function fetchPage(url, { timeout = 15000 } = {}) {
-              const errors = [];
-              for (let attempt = 0; attempt < 3; attempt++) {
-                const ua = USER_AGENTS[attempt % USER_AGENTS.length];
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeout);
-                try {
-                  const res = await fetch(url, {
-                    method: 'GET',
-                    redirect: 'follow',
-                    signal: controller.signal,
-                    headers: {
-                      'User-Agent': ua,
-                      'Accept': 'text/html,application/xhtml+xml,*/*',
-                    },
-                  });
-                  clearTimeout(timer);
-                  if (res.status >= 200 && res.status < 400) {
-                    const text = await res.text();
-                    return { ok: true, status: res.status, text, finalUrl: res.url };
-                  }
-                  errors.push(`HTTP ${res.status}`);
-                } catch (e) {
-                  clearTimeout(timer);
-                  errors.push(e.name === 'AbortError' ? `超时(${timeout / 1000}s)` : e.message);
-                }
-                if (attempt < 2) await sleep(500 * Math.pow(3, attempt));
-              }
-              return { ok: false, errors };
-            }
-
-            // 可达性检查（HEAD + Range），用于 url 和 avatar 校验
-            async function checkUrlReachable(url, { requireImage = false } = {}) {
-              const errors = [];
-              const redirects = [];
-
-              for (let attempt = 0; attempt < 3; attempt++) {
-                const ua = USER_AGENTS[attempt % USER_AGENTS.length];
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 15000);
-                try {
-                  const res = await fetch(url, {
-                    method: 'GET',
-                    redirect: 'manual',
-                    signal: controller.signal,
-                    headers: {
-                      'User-Agent': ua,
-                      'Accept': requireImage ? 'image/*' : '*/*',
-                      'Range': 'bytes=0-1023',
-                      'Accept-Encoding': 'identity',
-                    },
-                  });
-                  clearTimeout(timer);
-
-                  let finalRes = res;
-                  let location = res.headers.get('location');
-                  let hops = 0;
-                  while ([301, 302, 303, 307, 308].includes(finalRes.status) && location && hops < 5) {
-                    redirects.push(`${finalRes.status} → ${location}`);
-                    const nextUrl = new URL(location, url).href;
-                    const c2 = new AbortController();
-                    const t2 = setTimeout(() => c2.abort(), 15000);
-                    finalRes = await fetch(nextUrl, {
-                      method: 'GET',
-                      redirect: 'manual',
-                      signal: c2.signal,
-                      headers: {
-                        'User-Agent': ua,
-                        'Accept': requireImage ? 'image/*' : '*/*',
-                        'Range': 'bytes=0-1023',
-                        'Accept-Encoding': 'identity',
-                      },
-                    });
-                    clearTimeout(t2);
-                    location = finalRes.headers.get('location');
-                    hops++;
-                  }
-
-                  if (finalRes.status >= 200 && finalRes.status < 400) {
-                    if (requireImage) {
-                      const ct = (finalRes.headers.get('content-type') || '').toLowerCase();
-                      if (!ct.startsWith('image/')) {
-                        errors.push(`Content-Type 不是 image/* (实际: ${ct || '空'})`);
-                        await sleep(500 * Math.pow(3, attempt));
-                        continue;
-                      }
-                    }
-                    return {
-                      ok: true,
-                      status: finalRes.status,
-                      contentType: finalRes.headers.get('content-type'),
-                      redirects,
-                      attempts: attempt + 1,
-                    };
-                  }
-
-                  if (finalRes.status === 405 || finalRes.status === 403 || finalRes.status === 416) {
-                    const c3 = new AbortController();
-                    const t3 = setTimeout(() => c3.abort(), 15000);
-                    const r3 = await fetch(url, {
-                      method: 'GET',
-                      redirect: 'follow',
-                      signal: c3.signal,
-                      headers: {
-                        'User-Agent': ua,
-                        'Accept': requireImage ? 'image/*' : '*/*',
-                      },
-                    });
-                    clearTimeout(t3);
-                    if (r3.status >= 200 && r3.status < 400) {
-                      if (requireImage) {
-                        const ct = (r3.headers.get('content-type') || '').toLowerCase();
-                        if (!ct.startsWith('image/')) {
-                          errors.push(`Content-Type 不是 image/* (实际: ${ct || '空'})`);
-                          await sleep(500 * Math.pow(3, attempt));
-                          continue;
-                        }
-                      }
-                      return {
-                        ok: true,
-                        status: r3.status,
-                        contentType: r3.headers.get('content-type'),
-                        redirects,
-                        attempts: attempt + 1,
-                        fallback: true,
-                      };
-                    }
-                    errors.push(`HTTP ${r3.status}`);
-                  } else {
-                    errors.push(`HTTP ${finalRes.status}`);
-                  }
-                } catch (e) {
-                  clearTimeout(timer);
-                  errors.push(e.name === 'AbortError' ? '超时(15s)' : e.message);
-                }
-                if (attempt < 2) await sleep(500 * Math.pow(3, attempt));
-              }
-
-              return { ok: false, errors, redirects, attempts: 3 };
-            }
-
-            // ========== 反链验证 ==========
-            // 参考 afoim 的 verifyBacklink：从 HTML 中提取所有 href，检查是否包含本站 URL
-            function verifyBacklink(html, expected) {
-              if (!html || !expected) return { found: false, reason: 'empty input' };
-              const target = expected.replace(/\/$/, '').toLowerCase();
-
-              // 归一化：处理转义、&amp;、多余斜杠
-              const normalized = html.toLowerCase()
-                .replaceAll('\\/', '/')
-                .replaceAll('&amp;', '&')
-                .replace(/\/+(['"\s>])/g, '$1');
-
-              const patterns = [
-                /href\s*=\s*["']([^"']+)["']/gi,
-                /href\s*=\s*([^\s>]+)/gi,
-              ];
-              const foundLinks = [];
-              for (const re of patterns) {
-                let m;
-                while ((m = re.exec(normalized)) !== null) {
-                  const href = (m[1] || '').trim();
-                  if (!href.startsWith('http')) continue;
-                  foundLinks.push(href);
-                  const linkNorm = href.replace(/\/$/, '');
-                  if (linkNorm === target) {
-                    return { found: true, matchedHref: href, links: foundLinks };
-                  }
-                }
-              }
-              return { found: false, links: foundLinks, target };
-            }
-
-            function getHostname(urlStr) {
-              try {
-                return new URL(urlStr).hostname;
-              } catch {
-                return null;
-              }
-            }
-
-            // ========== 主流程开始 ==========
-
-            // ── 1. PR 文件变更范围校验 ─────────────────────────
-            let files = [];
-            try {
-              for await (const res of github.paginate.iterator(
-                github.rest.pulls.listFiles,
-                { owner, repo, pull_number, per_page: 100 }
-              )) {
-                files.push(...res.data);
-              }
-            } catch (e) {
-              await fail('无法读取 PR 文件清单', [`错误：${e.message}`]);
               return;
             }
 
-            if (files.length !== 1) {
-              await fail('PR 只能包含一个文件变更', [
-                `当前变更数：${files.length}`,
-                '请保证每个 PR 仅新增/修改/删除 data/friends/ 下单个 .json 文件。',
-              ]);
+            // PR 必须是 open 状态
+            if (pr.state !== 'open') {
+              core.info(`PR 状态为 ${pr.state}，跳过`);
               return;
             }
 
-            const file = files[0];
-            const FRIENDS_PREFIX = 'data/friends/';
-            if (!file.filename.startsWith(FRIENDS_PREFIX)) {
-              await fail('文件路径不合法', [
-                `检测到文件：${file.filename}`,
-                `只允许更改 ${FRIENDS_PREFIX} 下的文件。`,
-              ]);
-              return;
-            }
+            core.info(`✓ 开始重新校验 PR #${pull_number}`);
 
-            if (!['added', 'modified', 'removed'].includes(file.status)) {
-              await fail('不支持的文件操作', [`status: ${file.status}`]);
-              return;
-            }
-
-            // ── 2. 删除操作：跳过内容校验，直接合并 ───────────
-            // 删除友链是站主自己的事，无需校验
-            if (file.status === 'removed') {
-              core.info('删除操作，跳过校验，准备合并');
-            } else {
-              // ── 3. JSON 解析与 schema 校验 ─────────────────
-              if (!file.filename.endsWith('.json')) {
-                await fail('文件类型不合法', [
-                  `检测到非 .json 文件：${file.filename}`,
-                  'data/friends/ 下只允许 .json 文件。',
-                ]);
-                return;
-              }
-
-              let rawContent = '';
-              if (file.patch) {
-                rawContent = file.patch
-                  .split('\n')
-                  .filter((line) => !line.startsWith('@@') && !line.startsWith('---') && !line.startsWith('+++'))
-                  .map((line) => (line.startsWith('+') ? line.slice(1) : line.startsWith(' ') ? line.slice(1) : line))
-                  .join('\n')
-                  .trim();
-              } else if (file.status === 'added' || file.status === 'modified') {
-                try {
-                  const res = await fetch(file.raw_url, {
-                    headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
-                  });
-                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                  rawContent = await res.text();
-                } catch (e) {
-                  await fail('无法读取文件内容', [`错误：${e.message}`, `raw_url: ${file.raw_url}`]);
-                  return;
-                }
-              }
-
-              let data;
-              try {
-                data = JSON.parse(rawContent);
-              } catch (e) {
-                // 检测常见 JSON 语法错误，给贡献者更友好的提示
-                const lines = [
-                  `文件：${file.filename}`,
-                  `错误：${e.message}`,
-                  '',
-                ];
-
-                // 1. 中文全角引号（U+201C/U+201D）—— 最常见的中文输入法问题
-                if (/[“”]/.test(rawContent)) {
-                  lines.push('**检测到中文全角引号**（中文输入法常见问题）');
-                  lines.push('- ❌ 你用了：`“...”`（弯引号，左右配对）');
-                  lines.push('- ✅ 应改为：`"..."`（直引号，同一个字符）');
-                  lines.push('- 区别：中文引号是弯的 `“”`，ASCII 引号是直的 `""`');
-                  lines.push('');
-                }
-
-                // 2. 中文全角冒号/逗号
-                if (/[：，]/.test(rawContent)) {
-                  lines.push('**检测到中文全角标点**');
-                  lines.push('- ❌ 你用了：`：` 或 `，`（全角）');
-                  lines.push('- ✅ 应改为：`:` 或 `,`（半角）');
-                  lines.push('');
-                }
-
-                // 3. 单引号包字符串
-                if (/'[^']*'\s*:|:\s*'[^']*'/.test(rawContent)) {
-                  lines.push('**检测到单引号字符串**');
-                  lines.push('- ❌ 你用了：`\'...\'`（单引号）');
-                  lines.push('- ✅ 应改为：`"..."`（双引号）');
-                  lines.push('');
-                }
-
-                // 4. 尾逗号（最后一个属性后多了逗号）
-                if (/,\s*[}\]]/.test(rawContent)) {
-                  lines.push('**检测到尾逗号**');
-                  lines.push('- ❌ 你写了：`{ "a": 1, }`（最后一个属性后有逗号）');
-                  lines.push('- ✅ 应改为：`{ "a": 1 }`（删除 `}` 前的逗号）');
-                  lines.push('');
-                }
-
-                // 5. BOM 头
-                if (rawContent.charCodeAt(0) === 0xFEFF) {
-                  lines.push('**检测到 BOM 头**');
-                  lines.push('- ❌ 文件以 UTF-8 BOM 开头（不可见字符）');
-                  lines.push('- ✅ 用编辑器另存为「UTF-8（无 BOM）」');
-                  lines.push('');
-                }
-
-                // 6. 注释（JSON 不支持注释）
-                if (/^\s*\/\//m.test(rawContent) || /^\s*\/\*/m.test(rawContent)) {
-                  lines.push('**检测到注释**');
-                  lines.push('- ❌ 你写了：`// 注释` 或 `/* 注释 */`');
-                  lines.push('- ✅ JSON 不支持注释，请删除所有注释');
-                  lines.push('');
-                }
-
-                lines.push('**修复方法**：');
-                lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验你的 JSON 语法');
-                lines.push('2. 把所有中文引号 `"..."` 替换为 ASCII 引号 `"..."`');
-                lines.push('3. 把所有中文标点 `：，` 替换为 ASCII 标点 `:,`');
-                lines.push('4. 修改后 push 到本 PR 触发重新校验');
-
-                await fail('JSON 解析失败', lines);
-                return;
-              }
-
-              if (!data || typeof data !== 'object' || Array.isArray(data)) {
-                await fail('JSON 类型错误', ['JSON 必须是对象，不能是数组或基本类型。']);
-                return;
-              }
-
-              const errs = [];
-              const isNonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
-              const isNullOrString = (v) => v === null || typeof v === 'string';
-              const isHttpUrl = (v) => {
-                if (typeof v !== 'string') return false;
-                try {
-                  const u = new URL(v);
-                  return u.protocol === 'http:' || u.protocol === 'https:';
-                } catch { return false; }
-              };
-
-              if (!isNonEmptyString(data.name)) errs.push('`name` 必填且为非空字符串');
-              if (!isNonEmptyString(data.url)) errs.push('`url` 必填且为非空字符串');
-              else if (!isHttpUrl(data.url)) errs.push('`url` 必须是 `http://` 或 `https://` URL');
-              if (data.avatar !== undefined && !isNullOrString(data.avatar))
-                errs.push('`avatar` 必须是字符串或 `null`（或省略）');
-              if (data.description !== undefined && typeof data.description !== 'string')
-                errs.push('`description` 必须是字符串（或省略）');
-
-              // backlink 字段必填
-              if (!isNonEmptyString(data.backlink)) {
-                errs.push('`backlink` 必填且为非空字符串（你的友链页 URL）');
-              } else if (!isHttpUrl(data.backlink)) {
-                errs.push('`backlink` 必须是 `http://` 或 `https://` URL');
-              }
-
-              // ── 4. vip 反作弊：PR 一律拒绝 ───────────────
-              if (Object.prototype.hasOwnProperty.call(data, 'vip')) {
-                await fail('检测到 vip 字段，已终止', [
-                  'vip 字段仅站主直推 main 时可用，PR 不可携带。',
-                  `文件：${file.filename}`,
-                  '请删除 vip 字段后重新 push。',
-                ]);
-                return;
-              }
-
-              if (errs.length) {
-                await fail('数据校验未通过', [`文件：${file.filename}`, ...errs]);
-                return;
-              }
-
-              // ── 5. backlink 域名一致性校验 ────────────────
-              // backlink 的主域名必须与 url 主域名一致（防伪造）
-              const urlHost = getHostname(data.url);
-              const backlinkHost = getHostname(data.backlink);
-              if (urlHost && backlinkHost && urlHost !== backlinkHost) {
-                await fail('backlink 域名不一致', [
-                  `你的 url 主域名：\`${urlHost}\``,
-                  `你的 backlink 主域名：\`${backlinkHost}\``,
-                  '两者必须一致（backlink 必须是你自己网站的友链页）。',
-                ]);
-                return;
-              }
-
-              // backlink 不能指向本站
-              const siteHost = getHostname(SITE_URL);
-              if (backlinkHost && siteHost && backlinkHost === siteHost) {
-                await fail('backlink 指向本站', [
-                  'backlink 字段应填写**你自己**网站的友链页 URL，不能指向本站。',
-                  `本站 URL：\`${SITE_URL}\``,
-                ]);
-                return;
-              }
-
-              // ── 6. URL + avatar 可达性检查（并行）─────────
-              core.info('🌐 正在并行检查站点 URL 和头像 URL 可达性...');
-
-              const tasks = [
-                checkUrlReachable(data.url, { requireImage: false })
-                  .then((r) => ({ label: '站点 url', url: data.url, result: r })),
-              ];
-              if (typeof data.avatar === 'string' && data.avatar.trim()) {
-                tasks.push(
-                  checkUrlReachable(data.avatar, { requireImage: true })
-                    .then((r) => ({ label: '头像 avatar', url: data.avatar, result: r }))
-                );
-              }
-
-              const results = await Promise.all(tasks);
-              const failedChecks = results.filter((r) => !r.result.ok);
-
-              if (failedChecks.length) {
-                const lines = [];
-                for (const r of results) {
-                  if (!r.result.ok) {
-                    lines.push('```');
-                    lines.push(`✗ ${r.label} 不可达 (${r.url})`);
-                    lines.push(`  · 尝试 ${r.result.attempts} 次，错误：${r.result.errors.join('；')}`);
-                    lines.push('```');
-                    lines.push('');
-                  }
-                }
-                await fail('URL 可达性检查未通过', lines);
-                return;
-              }
-
-              // ── 7. 反链验证 ────────────────────────────────
-              core.info(`🔗 正在抓取 backlink 页面检查反链：${data.backlink}`);
-
-              const pageRes = await fetchPage(data.backlink);
-              if (!pageRes.ok) {
-                await fail('反链验证：无法访问 backlink 页面', [
-                  `backlink URL：\`${data.backlink}\``,
-                  `抓取失败：${pageRes.errors.join('；')}`,
-                  '',
-                  '请确认你的友链页 URL 正确且可公开访问。',
-                ]);
-                return;
-              }
-
-              core.info(`✓ backlink 页面抓取成功 (HTTP ${pageRes.status}, ${pageRes.text.length} bytes)`);
-
-              const backlinkResult = verifyBacklink(pageRes.text, SITE_URL);
-              if (!backlinkResult.found) {
-                const lines = [
-                  `在 backlink 页面未检测到本站友链链接。`,
-                  '',
-                  `**需要添加的链接**：\`${SITE_URL}\``,
-                  `**你的 backlink 页面**：\`${data.backlink}\``,
-                  '',
-                  `页面中检测到 ${backlinkResult.links.length} 个 http(s) 链接，但都不匹配本站 URL。`,
-                  '',
-                  '**常见原因**：',
-                  '- 友链页还没添加本站链接，或链接 URL 不完全一致',
-                  '- 友链页是 JavaScript 动态渲染的（workflow 只抓静态 HTML）',
-                  '- 友链页需要登录或被防火墙拦截',
-                  '- CDN 缓存返回了旧版本（等待几分钟后再 push）',
-                  '',
-                  '**修复方法**：',
-                  `1. 在你的友链页添加：<a href="${SITE_URL}">沫然Blog</a>`,
-                  '2. 确保 href 是绝对链接且 URL 完全一致',
-                  '3. push 更新本 PR 触发重新校验',
-                ];
-                await fail('反链验证未通过', lines);
-                return;
-              }
-
-              core.info(`✓ 反链验证通过：找到匹配链接 ${backlinkResult.matchedHref}`);
-            }
-
-            // ── 8. 自动合并 ────────────────────────────────────
-            core.info('✅ 所有校验通过（含反链验证），执行自动合并');
-
-            try {
-              const mergeRes = await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number,
-                merge_method: 'squash',
-                commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
-                commit_message: `由 auto-pr workflow 自动合并（含反链验证）\n\nCo-authored-by: ${prAuthor}`,
-              });
-              core.info(`✅ 合并成功：${mergeRes.data.sha}`);
-
-              // 触发 build workflow
-              try {
-                await github.rest.actions.createWorkflowDispatch({
-                  owner,
-                  repo,
-                  workflow_id: 'build.yml',
-                  ref: 'main',
-                });
-                core.info('✅ build workflow 已触发');
-              } catch (e) {
-                core.warning(`trigger build workflow failed: ${e.message}`);
-              }
-            } catch (e) {
-              await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系仓库管理员。']);
-            }
+            await runValidation({
+              owner, repo, pull_number,
+              prHead: pr.head,
+              prAuthor,
+              runUrl, github, core,
+              closeOnFail: false,  // 评论触发不关闭 PR
+              isRecheck: true,
+            });

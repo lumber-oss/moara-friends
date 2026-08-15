@@ -17,16 +17,17 @@ name: auto-pr
 #   8. URL 可达性检查（详见 fetchWithRetry 函数注释）
 #   9. avatar 可达性 + content-type 校验
 #
+# 评论策略：
+#   - 失败时发 1 条评论告知错误清单 + Action 日志链接，然后关闭 PR
+#   - 成功时不评论，直接 squash merge + 触发 build workflow
+#
 # 不做（按用户要求）：
-#   - 用户评论（不发任何评论）
 #   - 双向链接验证（爬 backlink 页面）
 #   - DNS 所有权验证
 #   - Playwright 渲染
 #   - 爬虫
 #   - feed 字段
-#
-# 失败时只关闭 PR（贡献者可从 Action 运行日志查看具体错误）。
-# 成功时 squash merge + 触发 build workflow。
+#   - 成功评论 / 欢迎评论 / 进度评论
 
 on:
   pull_request_target:
@@ -60,7 +61,9 @@ jobs:
             const prHead = context.payload.pull_request.head;
             const prAuthor = context.payload.pull_request.user.login;
 
-            // 失败时关闭 PR（不发评论，贡献者从 Action 日志查原因）
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            // 失败时关闭 PR
             async function closePR() {
               try {
                 await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
@@ -69,10 +72,37 @@ jobs:
               }
             }
 
-            // 失败辅助：记录错误并关闭 PR
+            // 失败辅助：记录日志 + 发评论 + 关闭 PR
+            // 评论只发 1 条，包含错误清单和 Action 日志链接
             async function fail(title, lines) {
               core.error(`❌ ${title}`);
               for (const l of lines) core.error(`  - ${l}`);
+
+              // 评论格式：
+              //   - 空行 → 保留空行（分段）
+              //   - 已以列表前缀 (- / * / 数字.) 开头 → 不再加前缀
+              //   - 代码块 (```) 或缩进行 → 不加前缀
+              //   - 其他普通行 → 加 `- ` 前缀
+              const body = [
+                `## ❌ ${title}`,
+                '',
+                ...lines.map((l) => {
+                  if (l === '') return '';
+                  if (l.startsWith('```') || l.startsWith('    ')) return l;
+                  if (/^\s*([-*+]|\d+\.)\s/.test(l)) return l;
+                  return `- ${l}`;
+                }),
+                '',
+                '---',
+                '修改后 push 到本 PR 会触发重新校验。  ',
+                `[查看 Action 运行日志](${runUrl})`,
+              ].join('\n');
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
+              } catch (e) {
+                core.warning(`createComment failed: ${e.message}`);
+              }
+
               await closePR();
             }
 

@@ -73,7 +73,8 @@ function loadAndValidate(dir) {
     if (!isNonEmptyString(data.name)) errs.push('name 必填且为非空字符串');
     if (!isNonEmptyString(data.url)) errs.push('url 必填且为非空字符串');
     else if (!isHttpUrl(data.url)) errs.push('url 必须是 http/https URL');
-    if (!isNullOrString(data.avatar)) errs.push('avatar 必须是字符串或 null');
+    if (data.avatar !== undefined && !isNullOrString(data.avatar))
+      errs.push('avatar 必须是字符串或 null（或省略）');
     if (data.description !== undefined && typeof data.description !== 'string')
       errs.push('description 必须是字符串');
     if (data.vip !== undefined && typeof data.vip !== 'boolean')

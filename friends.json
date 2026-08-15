@@ -5,23 +5,5 @@
     "avatar": "https://blog.945426.xyz/assets/img/icon/moara.webp",
     "description": "沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档",
     "vip": true
-  },
-  {
-    "name": "测试站点-端到端验证v2",
-    "url": "https://astro.build/",
-    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
-    "description": "测试 patch 解析修复后的端到端流程"
-  },
-  {
-    "name": "Astro官网-final",
-    "url": "https://astro.build/",
-    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
-    "description": "现代化的静态网站生成框架"
-  },
-  {
-    "name": "Astro官网-v2",
-    "url": "https://astro.build/",
-    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
-    "description": "现代化的静态网站生成框架"
   }
 ]

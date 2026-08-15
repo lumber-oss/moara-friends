@@ -9,5 +9,11 @@
   {
     "name": "你的站点名",
     "url": "https://raw-posts.945426.xyz/"
+  },
+  {
+    "name": "Tag测试-成功",
+    "url": "https://raw-posts.945426.xyz/",
+    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
+    "description": "测试成功时切换为已互链 tag"
   }
 ]

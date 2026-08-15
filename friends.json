@@ -5,5 +5,11 @@
     "avatar": "https://blog.945426.xyz/assets/img/icon/moara.webp",
     "description": "沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档",
     "vip": true
+  },
+  {
+    "name": "无评论测试",
+    "url": "https://astro.build/",
+    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
+    "description": "验证回滚评论后的极简流程"
   }
 ]

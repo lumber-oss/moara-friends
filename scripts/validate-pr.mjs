@@ -255,7 +255,72 @@ function getHostname(urlStr) {
 export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core }) {
   const SITE_URL = 'https://blog.945426.xyz';
 
-  // 失败辅助：记录日志 + 发评论（不自动关闭 PR，由人工处理）
+  // ========== Tag 管理 ==========
+  // Tag 设计：
+  //   友链    — 所有友链 PR 都打（固定，不删除）
+  //   已互链  — 校验通过 + 合并成功后打
+  //   未通过  — 校验失败时打
+  //
+  // 成功时：打 [友链, 已互链]，删除 [未通过]
+  // 失败时：打 [友链, 未通过]，删除 [已互链]
+  const LABEL_FRIEND = '友链';
+  const LABEL_OK = '已互链';
+  const LABEL_FAIL = '未通过';
+
+  // 确保 label 存在（不存在则创建，指定颜色）
+  async function ensureLabel(name, color) {
+    try {
+      await github.rest.issues.getLabel({ owner, repo, name });
+    } catch (e) {
+      if (e.status === 404) {
+        try {
+          await github.rest.issues.createLabel({ owner, repo, name, color });
+          core.info(`✓ 创建 label: ${name} (#${color})`);
+        } catch (createErr) {
+          core.warning(`创建 label ${name} 失败: ${createErr.message}`);
+        }
+      } else {
+        core.warning(`查询 label ${name} 失败: ${e.message}`);
+      }
+    }
+  }
+
+  // 同步 tag：addLabels 打上指定的，removeLabel 删除对立的
+  async function syncLabels({ add = [], remove = [] }) {
+    // 先确保要添加的 label 都存在
+    const labelColors = { [LABEL_FRIEND]: '0e8a16', [LABEL_OK]: '0e8a16', [LABEL_FAIL]: 'd73a4a' };
+    for (const name of add) {
+      await ensureLabel(name, labelColors[name] || 'ededed');
+    }
+
+    // 打 tag
+    if (add.length) {
+      try {
+        await github.rest.issues.addLabels({
+          owner, repo, issue_number: pull_number, labels: add,
+        });
+        core.info(`✓ 打 tag: ${add.join(', ')}`);
+      } catch (e) {
+        core.warning(`addLabels 失败: ${e.message}`);
+      }
+    }
+
+    // 删 tag（PR 上可能没有这个 tag，404 时忽略）
+    for (const name of remove) {
+      try {
+        await github.rest.issues.removeLabel({
+          owner, repo, issue_number: pull_number, name,
+        });
+        core.info(`✓ 删除 tag: ${name}`);
+      } catch (e) {
+        if (e.status !== 404) {
+          core.warning(`removeLabel ${name} 失败: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // 失败辅助：记录日志 + 发评论 + 打 tag（不自动关闭 PR，由人工处理）
   async function fail(title, lines) {
     core.error(`❌ ${title}`);
     for (const l of lines) core.error(`  - ${l}`);
@@ -279,6 +344,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     } catch (e) {
       core.warning(`createComment failed: ${e.message}`);
     }
+
+    // 失败时打 [友链, 未通过]，删除 [已互链]
+    await syncLabels({ add: [LABEL_FRIEND, LABEL_FAIL], remove: [LABEL_OK] });
   }
 
   // ── 1. PR 文件变更范围校验 ─────────────────────────
@@ -588,6 +656,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       commit_message: `由 auto-pr workflow 自动合并（含反链验证 + SSRF 防护）\n\nCo-authored-by: ${prAuthor}`,
     });
     core.info(`✅ 合并成功：${mergeRes.data.sha}`);
+
+    // 成功时打 [友链, 已互链]，删除 [未通过]
+    await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_FAIL] });
 
     try {
       await github.rest.actions.createWorkflowDispatch({

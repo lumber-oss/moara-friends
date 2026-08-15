@@ -78,6 +78,10 @@ function loadAndValidate(dir) {
       errs.push('description 必须是字符串');
     if (data.vip !== undefined && typeof data.vip !== 'boolean')
       errs.push('vip 必须是 boolean');
+    // backlink 字段：build 不强制要求（PR 校验在 auto-pr.yml 里做），
+    // 但若有则必须是字符串。backlink 不会写入输出 friends.json（前端不需要）
+    if (data.backlink !== undefined && typeof data.backlink !== 'string')
+      errs.push('backlink 必须是字符串');
 
     if (errs.length) {
       console.error(`  ❌ ${f}: ${errs.join('; ')}`);
@@ -86,6 +90,7 @@ function loadAndValidate(dir) {
     }
 
     // 输出标准化字段顺序，避免 git diff 噪音
+    // 注意：backlink 不输出（仅用于 PR 反链验证，前端展示不需要）
     const out = {
       name: data.name,
       url: data.url,

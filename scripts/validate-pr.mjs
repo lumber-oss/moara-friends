@@ -103,45 +103,89 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
 }
 
 // Playwright 渲染抓取（处理 JS 动态渲染的友链页）
-// 参考 afoim/af_friends-data 的实现
-// 用 networkidle 等待 JS 执行完，然后 page.content() 拿渲染后的 HTML
+// 参考 afoim/af_friends-data 的实现，含 5 项健壮性优化：
+//   1. 关闭 webdriver 标记 + 反检测脚本（避免 WAF 拦截）
+//   2. 真实 Chrome UA（避免 bot 检测）
+//   3. domcontentloaded 代替 networkidle（防 WebSocket 长连接卡死）
+//   4. waitForLoadState('networkidle', {timeout: 5000}) + 超时不报错（SPA 渲染缓冲）
+//   5. 失败重试 1 次（chromium crash / 网络抖动容错）
 async function fetchWithPlaywright(url) {
   const { execFileSync } = await import('node:child_process');
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-  // 写一个临时脚本给 Playwright 执行
   const scriptPath = path.join(process.cwd(), 'fetch-pw.mjs');
   const script = `
     import { chromium } from '@playwright/test';
     const targetUrl = process.argv[2];
-    let browser;
-    try {
-      browser = await chromium.launch({ headless: true });
-      const context = await browser.newContext({
-        userAgent: 'moara-friends-bot/1.0 (+github actions)',
-      });
-      const page = await context.newPage();
-      const response = await page.goto(targetUrl, {
-        waitUntil: 'networkidle',
-        timeout: 30000,
-      });
-      const body = await page.content();
-      const finalUrl = page.url();
-      const status = response ? response.status() : 0;
-      await browser.close();
-      console.log(JSON.stringify({ ok: status >= 200 && status < 400, status, text: body, finalUrl }));
-    } catch (e) {
-      if (browser) await browser.close();
-      console.log(JSON.stringify({ ok: false, error: e.message }));
+
+    // 真实 Chrome UA（借鉴点 2）
+    const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
+    async function fetchOnce() {
+      let browser;
+      try {
+        browser = await chromium.launch({
+          headless: true,
+          args: ['--disable-blink-features=AutomationControlled'],  // 借鉴点 1：关闭自动化标记
+        });
+        const context = await browser.newContext({
+          userAgent: CHROME_UA,
+          locale: 'zh-CN',
+          timezoneId: 'Asia/Shanghai',
+          viewport: { width: 1920, height: 1080 },
+          extraHTTPHeaders: {
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          },
+        });
+
+        // 借鉴点 1：反检测脚本——隐藏 webdriver 标记
+        await context.addInitScript(() => {
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          // 覆盖 plugins / languages 让 fingerprint 更像真实浏览器
+          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+          Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+          window.chrome = { runtime: {} };
+        });
+
+        const page = await context.newPage();
+
+        // 借鉴点 3：domcontentloaded 代替 networkidle，防 WebSocket / 统计上报长连接卡死
+        const response = await page.goto(targetUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        });
+
+        // 借鉴点 4：再等几秒 networkidle 给 SPA 渲染缓冲，超时不报错用当前 DOM 继续
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 5000 });
+        } catch {}
+
+        const body = await page.content();
+        const finalUrl = page.url();
+        const status = response ? response.status() : 0;
+        await browser.close();
+        return { ok: status >= 200 && status < 400, status, text: body, finalUrl };
+      } catch (e) {
+        if (browser) await browser.close();
+        return { ok: false, error: e.message };
+      }
     }
+
+    // 借鉴点 5：失败重试 1 次
+    let result = await fetchOnce();
+    if (!result.ok) {
+      await new Promise(r => setTimeout(r, 2000));  // 间隔 2 秒
+      result = await fetchOnce();
+    }
+    console.log(JSON.stringify(result));
   `;
   fs.writeFileSync(scriptPath, script);
 
   try {
     const output = execFileSync('node', [scriptPath, url], {
       encoding: 'utf8',
-      timeout: 45000,
+      timeout: 90000,  // 单次最多 45s × 2 + 间隔，放宽到 90s
       maxBuffer: 20 * 1024 * 1024,
     });
     const result = JSON.parse(output.trim().split('\n').pop());

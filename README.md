@@ -119,13 +119,14 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 3. **vip 拒绝**：PR 中检测到 `vip` 字段立即终止
 4. **域名一致性**：`backlink` 的主域名必须与 `url` 主域名一致（防伪造）
 5. **backlink 不能指向本站**：防止填错
-6. **URL 可达性**：多 UA 轮换 + 3 次重试 + Content-Type 校验（avatar 必须是 image/*）
-7. **反链验证**：fetch `backlink` 页面 HTML，用正则提取所有 `href`，检查是否包含 `https://blog.945426.xyz`
+6. **SSRF 防护**：拒绝 localhost / 私有 IP（10.x / 172.16-31.x / 192.168.x）/ 链路本地（169.254.x，含云元数据）/ IPv6 回环 / IPv4-mapped IPv6 等
+7. **URL 可达性**：多 UA 轮换 + 3 次重试 + Content-Type 校验（avatar 必须是 image/*）
+8. **反链验证**：fetch `backlink` 页面 HTML，用正则提取所有 `href`，检查是否包含 `https://blog.945426.xyz`
 
 ### 失败时
 
 - 评论错误清单 + 修复指引 + Action 日志链接
-- 自动关闭 PR
+- 自动关闭 PR（PR 事件触发时）
 - 贡献者收到 closed 邮件 + 评论邮件
 
 ### 成功时
@@ -134,6 +135,31 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 - 触发 build workflow 重建 friends.json
 - jsDelivr CDN 缓存数分钟内刷新
 - 不发评论（GitHub 默认会发 merged 邮件给贡献者）
+
+## 评论触发重新校验
+
+如果 PR 因为反链验证失败（比如对方友链页 CDN 缓存还没刷新），可以在 PR 评论：
+
+```
+/recheck
+```
+
+或中文：
+
+```
+/重新校验
+```
+
+workflow 会重新拉取最新 commit SHA 重新校验。
+
+**权限**：
+- ✅ PR 作者可以评论触发
+- ✅ 仓库协作者（admin/maintain/write）可以评论触发
+- ❌ 其他用户评论会被拒绝并提示
+
+**与 push 触发的区别**：
+- push 触发（`synchronize` 事件）：失败会关闭 PR
+- 评论触发（`/recheck`）：失败**不关闭** PR，方便用户继续修复
 
 ## 反链验证细节
 

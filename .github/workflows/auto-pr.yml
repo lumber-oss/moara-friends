@@ -404,7 +404,11 @@ jobs:
                 for (const r of results) {
                   core.info(formatCheckResult(r.result, r.label, r.url));
                   if (!r.result.ok) {
+                    // 多行结果用代码块包裹，避免 Markdown 列表渲染歧义
+                    lines.push('```');
                     lines.push(formatCheckResult(r.result, r.label, r.url));
+                    lines.push('```');
+                    lines.push('');
                   }
                 }
                 await fail('URL 可达性检查未通过', lines);

@@ -110,12 +110,20 @@ jobs:
             }
 
             // 最终结果评论：失败时附加修复指引
+            // 每行格式：
+            //   - 普通行：自动加 `- ` 前缀
+            //   - 空行：保留空行（用于分段）
+            //   - ``` 开头：代码块，不加前缀
             async function postResult(success, title, lines) {
               const icon = success ? '✅' : '❌';
               const body = [
                 `## ${icon} ${title}`,
                 '',
-                ...lines.map((l) => (l === '' ? '' : `- ${l}`)),
+                ...lines.map((l) => {
+                  if (l === '') return '';
+                  if (l.startsWith('```') || l.startsWith('    ')) return l;
+                  return `- ${l}`;
+                }),
                 '',
                 '---',
                 `⏱️ 耗时：${Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)}s  `,

@@ -377,7 +377,62 @@ jobs:
               try {
                 data = JSON.parse(rawContent);
               } catch (e) {
-                await fail('JSON 解析失败', [`文件：${file.filename}`, `错误：${e.message}`]);
+                // 检测常见 JSON 语法错误，给贡献者更友好的提示
+                const lines = [
+                  `文件：${file.filename}`,
+                  `错误：${e.message}`,
+                  '',
+                ];
+
+                // 1. 中文全角引号（U+201C/U+201D）—— 最常见的中文输入法问题
+                if (/[""]/.test(rawContent)) {
+                  lines.push('**检测到中文全角引号**（`"` `"`）');
+                  lines.push('JSON 必须用 ASCII 半角双引号 `"`，请检查你的输入法设置。');
+                  lines.push('');
+                }
+
+                // 2. 中文全角冒号/逗号
+                if (/[：，]/.test(rawContent)) {
+                  lines.push('**检测到中文全角标点**（`：` 或 `，`）');
+                  lines.push('JSON 必须用 ASCII 半角冒号 `:` 和逗号 `,`。');
+                  lines.push('');
+                }
+
+                // 3. 单引号包字符串
+                if (/'[^']*'\s*:|:\s*'[^']*'/.test(rawContent)) {
+                  lines.push('**检测到单引号字符串**');
+                  lines.push('JSON 必须用双引号 `"` 包裹字符串，不能用单引号 `\'`。');
+                  lines.push('');
+                }
+
+                // 4. 尾逗号（最后一个属性后多了逗号）
+                if (/,\s*[}\]]/.test(rawContent)) {
+                  lines.push('**检测到尾逗号**');
+                  lines.push('JSON 不允许最后一个属性后有逗号，请删除 `}` 或 `]` 前的逗号。');
+                  lines.push('');
+                }
+
+                // 5. BOM 头
+                if (rawContent.charCodeAt(0) === 0xFEFF) {
+                  lines.push('**检测到 BOM 头**');
+                  lines.push('文件以 UTF-8 BOM 开头，JSON 不允许 BOM。请用编辑器另存为 UTF-8（无 BOM）。');
+                  lines.push('');
+                }
+
+                // 6. 注释（JSON 不支持注释）
+                if (/^\s*\/\//m.test(rawContent) || /^\s*\/\*/m.test(rawContent)) {
+                  lines.push('**检测到注释**');
+                  lines.push('JSON 不支持注释（`//` 或 `/* */`），请删除所有注释。');
+                  lines.push('');
+                }
+
+                lines.push('**修复方法**：');
+                lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验你的 JSON 语法');
+                lines.push('2. 确认所有引号是 ASCII 双引号 `"`（不是中文 `"` `"`）');
+                lines.push('3. 确认所有标点是 ASCII 半角（`:` `,` 而非 `：` `，`）');
+                lines.push('4. 修改后 push 到本 PR 触发重新校验');
+
+                await fail('JSON 解析失败', lines);
                 return;
               }
 

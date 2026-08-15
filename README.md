@@ -126,8 +126,9 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 ### 失败时
 
 - 评论错误清单 + 修复指引 + Action 日志链接
-- 自动关闭 PR
-- 贡献者收到 closed 邮件 + 评论邮件
+- **PR 保持打开**（不自动关闭）
+- 贡献者收到评论邮件（仅 1 封）
+- 修复后 push 到本 PR 会自动触发重新校验；若不想继续，由人工手动关闭
 
 ### 成功时
 
@@ -135,6 +136,14 @@ PR 提交后，`auto-pr.yml` 会执行以下校验：
 - 触发 build workflow 重建 friends.json
 - jsDelivr CDN 缓存数分钟内刷新
 - 不发评论（GitHub 默认会发 merged 邮件给贡献者）
+
+### 重新触发校验
+
+PR 保持打开期间，贡献者可以通过以下方式触发重新校验：
+- **push 新 commit 到 PR head 分支**（触发 `synchronize` 事件，自动校验最新 commit SHA）
+- **关闭后重新打开 PR**（触发 `reopened` 事件）
+
+校验始终基于 PR head 的最新 commit SHA。
 
 ## 反链验证细节
 

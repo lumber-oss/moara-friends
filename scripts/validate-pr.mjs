@@ -255,14 +255,7 @@ function getHostname(urlStr) {
 export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core }) {
   const SITE_URL = 'https://blog.945426.xyz';
 
-  async function closePR() {
-    try {
-      await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
-    } catch (e) {
-      core.warning(`close PR failed: ${e.message}`);
-    }
-  }
-
+  // 失败辅助：记录日志 + 发评论（不自动关闭 PR，由人工处理）
   async function fail(title, lines) {
     core.error(`❌ ${title}`);
     for (const l of lines) core.error(`  - ${l}`);
@@ -278,7 +271,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }),
       '',
       '---',
-      '修改后 push 到本 PR 会触发重新校验。  ',
+      'PR 保持打开，修复后 push 到本 PR 会自动触发重新校验。若不想继续，请手动关闭。  ',
       `[查看 Action 运行日志](${runUrl})`,
     ].join('\n');
     try {
@@ -286,7 +279,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     } catch (e) {
       core.warning(`createComment failed: ${e.message}`);
     }
-    await closePR();
   }
 
   // ── 1. PR 文件变更范围校验 ─────────────────────────

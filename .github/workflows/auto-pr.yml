@@ -14,15 +14,19 @@ name: auto-pr
 #   5. avatar 可空、若提供必须是字符串
 #   6. description 可选、若提供必须是字符串
 #   7. vip 字段一律拒绝（PR 携带 vip 立即终止，防作弊）
-#   8. URL 可达性检查（详见 checkUrl 函数注释）
+#   8. URL 可达性检查（详见 fetchWithRetry 函数注释）
 #   9. avatar 可达性 + content-type 校验
 #
-# 评论策略：
-#   - PR 打开时发一条「欢迎评论」（仅 opened 时机）
-#   - 校验过程中维护一条「进度评论」（持续 update）
-#   - 失败时把进度评论更新为最终错误清单 + 修复指引
-#   - 成功时把进度评论更新为合并确认
-#   - 始终只有 1 条动态评论，避免污染 PR
+# 不做（按用户要求）：
+#   - 用户评论（不发任何评论）
+#   - 双向链接验证（爬 backlink 页面）
+#   - DNS 所有权验证
+#   - Playwright 渲染
+#   - 爬虫
+#   - feed 字段
+#
+# 失败时只关闭 PR（贡献者可从 Action 运行日志查看具体错误）。
+# 成功时 squash merge + 触发 build workflow。
 
 on:
   pull_request_target:
@@ -55,87 +59,8 @@ jobs:
             const pull_number = context.payload.pull_request.number;
             const prHead = context.payload.pull_request.head;
             const prAuthor = context.payload.pull_request.user.login;
-            const action = context.payload.action; // opened | synchronize | reopened
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const startedAt = new Date().toISOString();
 
-            // ── 评论管理 ─────────────────────────────────────
-            // 维护「一条进度评论」，校验过程中持续更新
-            let progressCommentId = null;
-
-            async function upsertProgress(body) {
-              try {
-                if (progressCommentId) {
-                  await github.rest.issues.updateComment({
-                    owner, repo, comment_id: progressCommentId, body,
-                  });
-                } else {
-                  const res = await github.rest.issues.createComment({
-                    owner, repo, issue_number: pull_number, body,
-                  });
-                  progressCommentId = res.data.id;
-                }
-              } catch (e) {
-                core.warning(`upsertProgress failed: ${e.message}`);
-              }
-            }
-
-            // 欢迎评论：仅 PR opened 时发一次
-            async function postWelcome() {
-              if (action !== 'opened') return;
-              const welcome = [
-                `👋 你好 @${prAuthor}，感谢提交友链！`,
-                '',
-                '本仓库使用 GitHub Action 自动校验 PR，无需人工审核。校验流程：',
-                '',
-                '1. 📁 文件路径校验',
-                '2. 📋 JSON schema 校验',
-                '3. 🚫 vip 字段检查',
-                '4. 🌐 站点 URL 可达性检查',
-                '5. 🖼️ 头像 URL 可达性检查',
-                '',
-                '校验全部通过后会自动合并，数分钟后 jsDelivr CDN 缓存刷新即可生效。',
-                '',
-                `⏱️ 开始时间：${startedAt}`,
-                '',
-                '---',
-                '校验进度见下方评论 ↓',
-              ].join('\n');
-              try {
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: pull_number, body: welcome,
-                });
-              } catch (e) {
-                core.warning(`welcome comment failed: ${e.message}`);
-              }
-            }
-
-            // 最终结果评论：失败时附加修复指引
-            // 每行格式自动推断：
-            //   - 空行 → 保留空行（分段）
-            //   - 已以列表前缀 (- / * / 数字.) 开头 → 不再加前缀
-            //   - 代码块 (```) 或缩进行 → 不加前缀
-            //   - 其他普通行 → 加 `- ` 前缀
-            async function postResult(success, title, lines) {
-              const icon = success ? '✅' : '❌';
-              const body = [
-                `## ${icon} ${title}`,
-                '',
-                ...lines.map((l) => {
-                  if (l === '') return '';
-                  if (l.startsWith('```') || l.startsWith('    ')) return l;
-                  if (/^\s*([-*+]|\d+\.)\s/.test(l)) return l;
-                  return `- ${l}`;
-                }),
-                '',
-                '---',
-                `⏱️ 耗时：${Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)}s  `,
-                `[查看 Action 运行日志](${runUrl})`,
-              ].join('\n');
-              await upsertProgress(body);
-            }
-
-            // 失败时关闭 PR
+            // 失败时关闭 PR（不发评论，贡献者从 Action 日志查原因）
             async function closePR() {
               try {
                 await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
@@ -144,20 +69,29 @@ jobs:
               }
             }
 
+            // 失败辅助：记录错误并关闭 PR
+            async function fail(title, lines) {
+              core.error(`❌ ${title}`);
+              for (const l of lines) core.error(`  - ${l}`);
+              await closePR();
+            }
+
             // ── 可达性检查 ───────────────────────────────────
             // 改进点：
             //   1. 多 UA 轮换（GitHub Actions IP 容易被风控，用浏览器 UA 提高通过率）
             //   2. 直接 GET + Range（替代 HEAD）：少数服务器拒绝 HEAD 或 HEAD 返回 405；
-            //      Range: bytes=0-0 只取首字节，带宽极小但服务器都支持
-            //   3. 重试 2 次，指数退避（500ms / 1500ms）
-            //   4. 分级超时：连接 5s / 整体 15s
+            //      Range: bytes=0-1023 只取首 1KB，带宽极小但服务器都支持
+            //   3. 重试 3 次，指数退避（500ms / 1500ms / 4500ms）
+            //   4. 超时 15s（避免误杀慢站）
             //   5. avatar 必须是 image/* content-type（防 HTML 404 页面伪装）
-            //   6. 追踪重定向链，失败时记录最终落点
+            //   6. 追踪重定向链（最多 5 跳），失败时记录最终落点
             const USER_AGENTS = [
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
               'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
               'Mozilla/5.0 (compatible; Googlebot/2.1; +https://www.google.com/bot.html)',
             ];
+
+            function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
             async function fetchWithRetry(url, { requireImage = false } = {}) {
               const errors = [];
@@ -170,12 +104,12 @@ jobs:
                 try {
                   const res = await fetch(url, {
                     method: 'GET',
-                    redirect: 'manual', // 手动追踪，便于记录重定向链
+                    redirect: 'manual',
                     signal: controller.signal,
                     headers: {
                       'User-Agent': ua,
                       'Accept': requireImage ? 'image/*' : '*/*',
-                      'Range': 'bytes=0-1023', // 只取首 1KB，省带宽
+                      'Range': 'bytes=0-1023',
                       'Accept-Encoding': 'identity',
                     },
                   });
@@ -211,7 +145,6 @@ jobs:
                       const ct = (finalRes.headers.get('content-type') || '').toLowerCase();
                       if (!ct.startsWith('image/')) {
                         errors.push(`Content-Type 不是 image/* (实际: ${ct || '空'})`);
-                        // 继续重试其他 UA
                         await sleep(500 * Math.pow(3, attempt));
                         continue;
                       }
@@ -226,7 +159,7 @@ jobs:
                     };
                   }
 
-                  // 405/403 时退回完整 GET（不带 Range，部分 CDN 对 Range 敏感）
+                  // 405/403/416 时退回完整 GET（不带 Range，部分 CDN 对 Range 敏感）
                   if (finalRes.status === 405 || finalRes.status === 403 || finalRes.status === 416) {
                     const c3 = new AbortController();
                     const t3 = setTimeout(() => c3.abort(), 15000);
@@ -273,8 +206,6 @@ jobs:
               return { ok: false, errors, redirects, attempts: 3 };
             }
 
-            function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
             function formatCheckResult(r, label, url) {
               if (r.ok) {
                 const parts = [`✓ ${label} 可达 (HTTP ${r.status})`];
@@ -297,13 +228,6 @@ jobs:
             // ──────────────────────────────────────────────────
             // 主流程开始
             // ──────────────────────────────────────────────────
-            await postWelcome();
-
-            await upsertProgress([
-              '## ⏳ 校验进行中',
-              '',
-              '正在读取 PR 文件清单...',
-            ].join('\n'));
 
             // ── 1. PR 文件变更范围校验 ─────────────────────────
             let files = [];
@@ -315,76 +239,51 @@ jobs:
                 files.push(...res.data);
               }
             } catch (e) {
-              await postResult(false, '无法读取 PR 文件清单', [`错误：${e.message}`]);
-              await closePR();
+              await fail('无法读取 PR 文件清单', [`错误：${e.message}`]);
               return;
             }
 
             if (files.length !== 1) {
-              await postResult(false, 'PR 只能包含一个文件变更', [
+              await fail('PR 只能包含一个文件变更', [
                 `当前变更数：${files.length}`,
-                '',
-                '请保证每个 PR 仅新增/修改/删除 `data/friends/` 下单个 `.json` 文件。',
-                '',
-                '**修复方法**：',
-                '1. 关闭本 PR',
-                '2. 在你的 fork 中创建多个独立 PR，每个 PR 只改一个文件',
+                '请保证每个 PR 仅新增/修改/删除 data/friends/ 下单个 .json 文件。',
               ]);
-              await closePR();
               return;
             }
 
             const file = files[0];
             const FRIENDS_PREFIX = 'data/friends/';
             if (!file.filename.startsWith(FRIENDS_PREFIX)) {
-              await postResult(false, '文件路径不合法', [
-                `检测到文件：\`${file.filename}\``,
-                `只允许更改 \`${FRIENDS_PREFIX}\` 下的文件。`,
+              await fail('文件路径不合法', [
+                `检测到文件：${file.filename}`,
+                `只允许更改 ${FRIENDS_PREFIX} 下的文件。`,
               ]);
-              await closePR();
               return;
             }
 
             if (!['added', 'modified', 'removed'].includes(file.status)) {
-              await postResult(false, '不支持的文件操作', [`status: ${file.status}`]);
-              await closePR();
+              await fail('不支持的文件操作', [`status: ${file.status}`]);
               return;
             }
 
             // ── 2. 删除操作：跳过内容校验，直接合并 ───────────
             if (file.status === 'removed') {
-              await upsertProgress([
-                '## ⏳ 校验进行中',
-                '',
-                '✓ 文件路径合法（删除操作）',
-                '',
-                '正在执行合并...',
-              ].join('\n'));
+              core.info('删除操作，跳过校验，准备合并');
             } else {
               // ── 3. JSON 解析与 schema 校验 ─────────────────
               if (!file.filename.endsWith('.json')) {
-                await postResult(false, '文件类型不合法', [
-                  `检测到非 .json 文件：\`${file.filename}\``,
-                  '`data/friends/` 下只允许 `.json` 文件。',
+                await fail('文件类型不合法', [
+                  `检测到非 .json 文件：${file.filename}`,
+                  'data/friends/ 下只允许 .json 文件。',
                 ]);
-                await closePR();
                 return;
               }
-
-              await upsertProgress([
-                '## ⏳ 校验进行中',
-                '',
-                `✓ 文件路径合法：\`${file.filename}\``,
-                '',
-                '正在读取文件内容...',
-              ].join('\n'));
 
               // 通过 PR files API 已返回的 patch 字段拿文件内容
               // 比 getContent 更稳定（getContent 在 pull_request_target 事件下
               // 对 fork PR 的 head ref 可能 404）
               let rawContent = '';
               if (file.patch) {
-                // 解析 unified diff patch：去掉 @@ 行首，去掉 +/-/前缀空格
                 rawContent = file.patch
                   .split('\n')
                   .filter((line) => !line.startsWith('@@') && !line.startsWith('---') && !line.startsWith('+++'))
@@ -400,53 +299,21 @@ jobs:
                   if (!res.ok) throw new Error(`HTTP ${res.status}`);
                   rawContent = await res.text();
                 } catch (e) {
-                  await postResult(false, '无法读取文件内容', [
-                    `错误：${e.message}`,
-                    `raw_url: ${file.raw_url}`,
-                  ]);
-                  await closePR();
+                  await fail('无法读取文件内容', [`错误：${e.message}`, `raw_url: ${file.raw_url}`]);
                   return;
                 }
               }
-
-              await upsertProgress([
-                '## ⏳ 校验进行中',
-                '',
-                `✓ 文件路径合法：\`${file.filename}\``,
-                '✓ 文件内容已读取',
-                '',
-                '正在校验 JSON schema...',
-              ].join('\n'));
 
               let data;
               try {
                 data = JSON.parse(rawContent);
               } catch (e) {
-                await postResult(false, 'JSON 解析失败', [
-                  `文件：\`${file.filename}\``,
-                  `错误：${e.message}`,
-                  '',
-                  '**修复方法**：用 [JSONLint](https://jsonlint.com/) 校验你的 JSON 语法。',
-                ]);
-                await closePR();
+                await fail('JSON 解析失败', [`文件：${file.filename}`, `错误：${e.message}`]);
                 return;
               }
 
               if (!data || typeof data !== 'object' || Array.isArray(data)) {
-                await postResult(false, 'JSON 类型错误', [
-                  'JSON 必须是对象 `{ ... }`，不能是数组或基本类型。',
-                  '',
-                  '**正确示例**：',
-                  '```json',
-                  '{',
-                  '  "name": "你的站点名",',
-                  '  "url": "https://example.com/",',
-                  '  "avatar": "https://example.com/avatar.png",',
-                  '  "description": "一句话简介"',
-                  '}',
-                  '```',
-                ]);
-                await closePR();
+                await fail('JSON 类型错误', ['JSON 必须是对象，不能是数组或基本类型。']);
                 return;
               }
 
@@ -461,53 +328,31 @@ jobs:
                 } catch { return false; }
               };
 
-              if (!isNonEmptyString(data.name)) errs.push('`name` 必填且为非空字符串');
-              if (!isNonEmptyString(data.url)) errs.push('`url` 必填且为非空字符串');
-              else if (!isHttpUrl(data.url)) errs.push('`url` 必须是 `http://` 或 `https://` URL');
+              if (!isNonEmptyString(data.name)) errs.push('name 必填且为非空字符串');
+              if (!isNonEmptyString(data.url)) errs.push('url 必填且为非空字符串');
+              else if (!isHttpUrl(data.url)) errs.push('url 必须是 http/https URL');
               if (data.avatar !== undefined && !isNullOrString(data.avatar))
-                errs.push('`avatar` 必须是字符串或 `null`（或省略）');
+                errs.push('avatar 必须是字符串或 null（或省略）');
               if (data.description !== undefined && typeof data.description !== 'string')
-                errs.push('`description` 必须是字符串（或省略）');
+                errs.push('description 必须是字符串（或省略）');
 
               // ── 4. vip 反作弊：PR 一律拒绝 ───────────────
               if (Object.prototype.hasOwnProperty.call(data, 'vip')) {
-                await postResult(false, '检测到 vip 字段，已终止', [
-                  '`vip` 字段仅站主直推 main 时可用，PR 不可携带。',
-                  `文件：\`${file.filename}\``,
-                  '',
-                  '**修复方法**：删除 `vip` 字段后重新 push。',
-                  '',
-                  '```json',
-                  '{',
-                  '  "name": "...",',
-                  '  "url": "...",',
-                  '  "avatar": "...",',
-                  '  "description": "..."',
-                  '}',
-                  '```',
+                await fail('检测到 vip 字段，已终止', [
+                  'vip 字段仅站主直推 main 时可用，PR 不可携带。',
+                  `文件：${file.filename}`,
+                  '请删除 vip 字段后重新 push。',
                 ]);
-                await closePR();
                 return;
               }
 
               if (errs.length) {
-                await postResult(false, '数据校验未通过', [`文件：\`${file.filename}\``, '', ...errs]);
-                await closePR();
+                await fail('数据校验未通过', [`文件：${file.filename}`, ...errs]);
                 return;
               }
 
               // ── 5. URL 可达性检查（并行）─────────────────────
-              await upsertProgress([
-                '## ⏳ 校验进行中',
-                '',
-                `✓ 文件路径合法：\`${file.filename}\``,
-                '✓ 文件内容已读取',
-                '✓ JSON schema 校验通过',
-                '✓ vip 字段检查通过',
-                '',
-                '🌐 正在并行检查站点 URL 和头像 URL 可达性...',
-                '（多 UA 轮换 + 3 次重试，最多约 30 秒）',
-              ].join('\n'));
+              core.info('🌐 正在并行检查站点 URL 和头像 URL 可达性...');
 
               const tasks = [];
               tasks.push(
@@ -527,47 +372,19 @@ jobs:
               if (failedChecks.length) {
                 const lines = [];
                 for (const r of results) {
+                  core.info(formatCheckResult(r.result, r.label, r.url));
                   if (!r.result.ok) {
-                    lines.push('```');
                     lines.push(formatCheckResult(r.result, r.label, r.url));
-                    lines.push('```');
-                    lines.push('');
                   }
                 }
-                lines.push('**常见原因**：');
-                lines.push('- URL 拼写错误或域名过期');
-                lines.push('- 服务器无响应 / 防火墙拦截 GitHub Actions IP 段');
-                lines.push('- 头像 URL 返回的不是图片（如返回 HTML 错误页）');
-                lines.push('- 图床防盗链（解决：换用支持外链的图床，如 [sm.ms](https://sm.ms)、[imgur](https://imgur.com)）');
-                lines.push('');
-                lines.push('**修复方法**：');
-                lines.push('1. 浏览器打开 URL 验证能否访问');
-                lines.push('2. 修改后 push 到本 PR 触发重新校验');
-                await postResult(false, 'URL 可达性检查未通过', lines);
-                await closePR();
+                await fail('URL 可达性检查未通过', lines);
                 return;
               }
 
-              // 全部通过，写详情
-              const detailLines = ['所有检查通过：'];
+              // 全部通过，日志记录详情
               for (const r of results) {
-                detailLines.push('```');
-                detailLines.push(formatCheckResult(r.result, r.label, r.url));
-                detailLines.push('```');
-                detailLines.push('');
+                core.info(formatCheckResult(r.result, r.label, r.url));
               }
-              await upsertProgress([
-                '## ⏳ 校验进行中',
-                '',
-                `✓ 文件路径合法：\`${file.filename}\``,
-                '✓ 文件内容已读取',
-                '✓ JSON schema 校验通过',
-                '✓ vip 字段检查通过',
-                '✓ URL 可达性检查通过',
-                '',
-                ...detailLines,
-                '正在执行自动合并...',
-              ].join('\n'));
             }
 
             // ── 6. 自动合并 ────────────────────────────────────
@@ -582,16 +399,7 @@ jobs:
                 commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
                 commit_message: `由 auto-pr workflow 自动合并\n\nCo-authored-by: ${prAuthor}`,
               });
-
-              const successLines = [
-                `已 squash merge 到 main：[\`${mergeRes.data.sha.substring(0, 7)}\`](${context.serverUrl}/${owner}/${repo}/commit/${mergeRes.data.sha})`,
-                '',
-                '📦 接下来：',
-                `- 正在触发 build workflow 重建 \`friends.json\`（约 30 秒）`,
-                `- jsDelivr CDN 缓存约 12 小时，如需立即生效可访问 [purge.jsdelivr.net](https://purge.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json) 强制刷新`,
-                `- 数据 URL：\`https://cdn.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json\``,
-              ];
-              await postResult(true, '校验通过，已自动合并', successLines);
+              core.info(`✅ 合并成功：${mergeRes.data.sha}`);
 
               // 触发 build workflow（GITHUB_TOKEN 触发的 push 不会自动触发其他 workflow，
               // 需要 workflow_dispatch 手动启动）
@@ -607,10 +415,5 @@ jobs:
                 core.warning(`trigger build workflow failed: ${e.message}`);
               }
             } catch (e) {
-              await postResult(false, '自动合并失败', [
-                `错误：${e.message}`,
-                '',
-                '请手动合并此 PR 或联系仓库管理员。',
-              ]);
-              await closePR();
+              await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系仓库管理员。']);
             }

@@ -18,7 +18,7 @@ name: auto-pr
 #   5. backlink 主域名必须与 url 主域名一致
 #   6. backlink 不能指向本站
 #   7. URL + avatar 可达性检查（多 UA + 重试 + Content-Type）
-#   8. 反链验证：fetch backlink 页面 HTML，检查是否包含本站 URL
+#   8. 反链验证：先 fetch 静态 HTML，找不到则 fallback 到 Playwright 渲染（处理 JS 动态渲染的友链页）
 #
 # 评论策略：
 #   - 失败时发 1 条评论告知错误清单 + Action 日志链接，PR 保持打开（不自动关闭）
@@ -46,12 +46,23 @@ concurrency:
 jobs:
   triage:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15  # Playwright 渲染可能较慢，从 10 提到 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        # 用于反链验证时渲染 JS 动态页面（CSR/SPA 友链页）
+        run: |
+          npm install -D @playwright/test
+          npx playwright install chromium --with-deps
 
       - name: Validate PR
         uses: actions/github-script@v7

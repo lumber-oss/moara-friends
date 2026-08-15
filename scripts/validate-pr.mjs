@@ -102,6 +102,60 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
   return { ok: false, errors };
 }
 
+// Playwright 渲染抓取（处理 JS 动态渲染的友链页）
+// 参考 afoim/af_friends-data 的实现
+// 用 networkidle 等待 JS 执行完，然后 page.content() 拿渲染后的 HTML
+async function fetchWithPlaywright(url) {
+  const { execFileSync } = await import('node:child_process');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  // 写一个临时脚本给 Playwright 执行
+  const scriptPath = path.join(process.cwd(), 'fetch-pw.mjs');
+  const script = `
+    import { chromium } from '@playwright/test';
+    const targetUrl = process.argv[2];
+    let browser;
+    try {
+      browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext({
+        userAgent: 'moara-friends-bot/1.0 (+github actions)',
+      });
+      const page = await context.newPage();
+      const response = await page.goto(targetUrl, {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+      const body = await page.content();
+      const finalUrl = page.url();
+      const status = response ? response.status() : 0;
+      await browser.close();
+      console.log(JSON.stringify({ ok: status >= 200 && status < 400, status, text: body, finalUrl }));
+    } catch (e) {
+      if (browser) await browser.close();
+      console.log(JSON.stringify({ ok: false, error: e.message }));
+    }
+  `;
+  fs.writeFileSync(scriptPath, script);
+
+  try {
+    const output = execFileSync('node', [scriptPath, url], {
+      encoding: 'utf8',
+      timeout: 45000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const result = JSON.parse(output.trim().split('\n').pop());
+    if (result.ok) {
+      return { ok: true, status: result.status, text: result.text, finalUrl: result.finalUrl };
+    }
+    return { ok: false, errors: [result.error || '未知错误'] };
+  } catch (e) {
+    return { ok: false, errors: [e.message] };
+  } finally {
+    try { fs.unlinkSync(scriptPath); } catch {}
+  }
+}
+
 async function checkUrlReachable(url, { requireImage = false } = {}) {
   const errors = [];
   const redirects = [];
@@ -599,7 +653,8 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 8. 反链验证 ────────────────────────────────
+    // ── 8. 反链验证（两层 fallback）─────────────────
+    // 先用 fetch 抓静态 HTML（快），找不到反链再用 Playwright 渲染（处理 JS 动态页面）
     core.info(`🔗 正在抓取 backlink 页面检查反链：${data.backlink}`);
 
     const pageRes = await fetchPage(data.backlink);
@@ -615,7 +670,22 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
     core.info(`✓ backlink 页面抓取成功 (HTTP ${pageRes.status}, ${pageRes.text.length} bytes)`);
 
-    const backlinkResult = verifyBacklink(pageRes.text, SITE_URL);
+    let backlinkResult = verifyBacklink(pageRes.text, SITE_URL);
+    let usedPlaywright = false;
+
+    // 静态 HTML 没找到反链 → fallback 到 Playwright 渲染
+    if (!backlinkResult.found) {
+      core.info(`⚠️ 静态 HTML 未找到反链，尝试用 Playwright 渲染（处理 JS 动态页面）...`);
+      const pwRes = await fetchWithPlaywright(data.backlink);
+      if (pwRes.ok) {
+        core.info(`✓ Playwright 渲染成功 (${pwRes.text.length} bytes)`);
+        backlinkResult = verifyBacklink(pwRes.text, SITE_URL);
+        usedPlaywright = true;
+      } else {
+        core.warning(`Playwright 渲染失败：${pwRes.errors.join('；')}`);
+      }
+    }
+
     if (!backlinkResult.found) {
       const lines = [
         `在 backlink 页面未检测到本站友链链接。`,
@@ -623,11 +693,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         `**需要添加的链接**：\`${SITE_URL}\``,
         `**你的 backlink 页面**：\`${data.backlink}\``,
         '',
-        `页面中检测到 ${backlinkResult.links.length} 个 http(s) 链接，但都不匹配本站 URL。`,
+        usedPlaywright
+          ? `已用 Playwright 渲染 JS 后仍找不到（页面中检测到 ${backlinkResult.links.length} 个 http(s) 链接，都不匹配）`
+          : `静态 HTML 中检测到 ${backlinkResult.links.length} 个 http(s) 链接，都不匹配；Playwright 渲染失败或未执行`,
         '',
         '**常见原因**：',
         '- 友链页还没添加本站链接，或链接 URL 不完全一致',
-        '- 友链页是 JavaScript 动态渲染的（workflow 只抓静态 HTML）',
         '- 友链页需要登录或被防火墙拦截',
         '- CDN 缓存返回了旧版本（等待几分钟后再 push）',
         '',
@@ -640,7 +711,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    core.info(`✓ 反链验证通过：找到匹配链接 ${backlinkResult.matchedHref}`);
+    core.info(`✓ 反链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`);
   }
 
   // ── 9. 自动合并 ────────────────────────────────────

@@ -11,5 +11,17 @@
     "url": "https://astro.build/",
     "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
     "description": "测试 patch 解析修复后的端到端流程"
+  },
+  {
+    "name": "Astro官网-final",
+    "url": "https://astro.build/",
+    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
+    "description": "现代化的静态网站生成框架"
+  },
+  {
+    "name": "Astro官网-v2",
+    "url": "https://astro.build/",
+    "avatar": "https://avatars.githubusercontent.com/u/44914786?v=4&s=640",
+    "description": "现代化的静态网站生成框架"
   }
 ]

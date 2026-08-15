@@ -1,7 +1,13 @@
 name: build
 
-# push 到 main 后，扫描 data/friends/*.json → 生成 friends.json → commit 回 main
-# jsDelivr 直接读取 main 分支根目录的 friends.json，零外部部署
+# 重建 friends.json 并 commit 回 main
+#
+# 触发：
+#   1. push 到 main 且改了 data/friends/ / scripts/build.js / 本 workflow
+#      （注意：用 GITHUB_TOKEN 触发的 push 不会触发其他 workflow，所以 PR 合并后走 workflow_dispatch）
+#   2. workflow_dispatch（由 auto-pr.yml 在合并 PR 后手动触发）
+#   3. schedule（每小时兜底一次，防止前两种漏触发的极端情况）
+
 on:
   push:
     branches: [main]
@@ -10,6 +16,8 @@ on:
       - 'scripts/build.js'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
 
 permissions:
   contents: write

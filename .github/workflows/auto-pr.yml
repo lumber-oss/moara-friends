@@ -576,11 +576,25 @@ jobs:
                 `已 squash merge 到 main：[\`${mergeRes.data.sha.substring(0, 7)}\`](${context.serverUrl}/${owner}/${repo}/commit/${mergeRes.data.sha})`,
                 '',
                 '📦 接下来：',
-                `- build workflow 会自动重建 \`friends.json\`（约 30 秒）`,
+                `- 正在触发 build workflow 重建 \`friends.json\`（约 30 秒）`,
                 `- jsDelivr CDN 缓存约 12 小时，如需立即生效可访问 [purge.jsdelivr.net](https://purge.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json) 强制刷新`,
                 `- 数据 URL：\`https://cdn.jsdelivr.net/gh/moaradc/moara-friends@main/friends.json\``,
               ];
               await postResult(true, '校验通过，已自动合并', successLines);
+
+              // 触发 build workflow（GITHUB_TOKEN 触发的 push 不会自动触发其他 workflow，
+              // 需要 workflow_dispatch 手动启动）
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner,
+                  repo,
+                  workflow_id: 'build.yml',
+                  ref: 'main',
+                });
+                core.info('✅ build workflow 已触发');
+              } catch (e) {
+                core.warning(`trigger build workflow failed: ${e.message}`);
+              }
             } catch (e) {
               await postResult(false, '自动合并失败', [
                 `错误：${e.message}`,

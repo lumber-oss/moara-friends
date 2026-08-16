@@ -139,7 +139,24 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
 }
 
 // Playwright 渲染抓取（处理 JS 动态渲染的友链页）
+// 浏览器按需安装——静态 fetch 找不到反链时才安装，节省大部分 PR 的时间
+let playwrightInstalled = false;
+
+async function ensurePlaywrightBrowser() {
+  if (playwrightInstalled) return;
+  const { execFileSync } = await import('node:child_process');
+  console.log('📦 安装 Playwright 浏览器（首次使用，约 20 秒）...');
+  execFileSync('npx', ['playwright', 'install', 'chromium', '--with-deps'], {
+    stdio: 'inherit',
+    timeout: 120000,
+  });
+  playwrightInstalled = true;
+  console.log('✓ Playwright 浏览器安装完成');
+}
+
 async function fetchWithPlaywright(url) {
+  await ensurePlaywrightBrowser();
+
   const { execFileSync } = await import('node:child_process');
   const fs = await import('node:fs');
   const path = await import('node:path');

@@ -149,7 +149,9 @@ async function fetchWithPlaywright(url) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moara-pw-'));
   const scriptPath = path.join(tmpDir, 'fetch-pw.mjs');
   const script = `
-    import { chromium } from '@playwright/test';
+    import { createRequire } from 'module';
+    const require = createRequire('${process.cwd()}/');
+    const { chromium } = require('@playwright/test');
     const targetUrl = process.argv[2];
 
     const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';

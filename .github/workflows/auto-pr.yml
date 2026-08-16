@@ -59,8 +59,9 @@ jobs:
             const repo = context.repo.repo;
             const pull_number = context.payload.pull_request.number;
             const prHead = context.payload.pull_request.head;
+            const baseSha = context.payload.pull_request.base.sha;
             const prAuthor = context.payload.pull_request.user.login;
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             await runValidation({
-              owner, repo, pull_number, prHead, prAuthor, runUrl, github, core,
+              owner, repo, pull_number, prHead, prAuthor, runUrl, github, core, baseSha,
             });

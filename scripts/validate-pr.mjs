@@ -379,7 +379,7 @@ function getHostname(urlStr) {
 }
 
 // ========== 主校验流程 ==========
-export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core }) {
+export async function runValidation({ owner, repo, pull_number, prHead, prAuthor, runUrl, github, core, baseSha }) {
   const SITE_URL = 'https://blog.945426.xyz';
 
   // ========== Tag 管理 ==========
@@ -499,7 +499,67 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     return;
   }
 
-  // ── 2. 删除操作：跳过内容校验 ────────────────────
+  // ── 2. 修改/删除操作：DNS TXT 域名所有权验证 ──────
+  if (file.status === 'modified' || file.status === 'removed') {
+    const isDelete = file.status === 'removed';
+    core.info(`检测到${isDelete ? '删除' : '修改'}操作，需要 DNS TXT 域名所有权验证`);
+
+    // 从 base 分支读取原始文件内容，获取 url 的 hostname
+    let originalUrl = null;
+    try {
+      const baseRes = await github.rest.repos.getContent({
+        owner, repo, path: file.filename, ref: baseSha,
+      });
+      if (!Array.isArray(baseRes.data) && baseRes.data.content) {
+        const raw = Buffer.from(baseRes.data.content, baseRes.data.encoding || 'base64').toString('utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed.url) originalUrl = parsed.url;
+      }
+    } catch (e) {
+      core.warning(`读取 base 文件失败: ${e.message}`);
+    }
+
+    if (originalUrl) {
+      let hostname = null;
+      try { hostname = new URL(originalUrl).hostname; } catch {}
+
+      if (hostname) {
+        const expected = `moara-friends=${pull_number}`;
+        const dns = (await import('node:dns')).promises;
+        const domains = [hostname, `_moara-friends.${hostname}`];
+        let verified = false;
+
+        for (const d of domains) {
+          try {
+            const records = await dns.resolveTxt(d);
+            const flat = records.flat();
+            if (flat.some(t => t.includes(expected))) {
+              verified = true;
+              core.info(`✓ DNS TXT 验证通过: ${d}`);
+              break;
+            }
+          } catch {}
+        }
+
+        if (!verified) {
+          await fail('域名所有权验证失败', [
+            `检测到你正在${isDelete ? '删除' : '修改'}现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
+            '',
+            `1. 在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
+            `2. 记录内容：\`${expected}\``,
+            '3. 添加完成后 push 更新本 PR 触发重新校验',
+            '',
+            `原始文件 URL：\`${originalUrl}\``,
+          ]);
+          return;
+        }
+      }
+    } else {
+      core.warning('无法读取原始文件 URL，跳过 DNS 验证');
+    }
+  }
+
+  // ── 3. 删除操作：跳过内容校验 ────────────────────
   if (file.status === 'removed') {
     core.info('删除操作，跳过校验');
   } else {

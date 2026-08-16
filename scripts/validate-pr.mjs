@@ -841,6 +841,27 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   // ── 9. 自动合并 ────────────────────────────────────
   core.info('✅ 所有校验通过（含反链验证 + SSRF 防护），执行自动合并');
 
+  // 检查 PR 是否可合并（无冲突）
+  try {
+    const prInfo = await github.rest.pulls.get({ owner, repo, pull_number });
+    core.info(`pr.mergeable=${prInfo.data.mergeable}, pr.mergeable_state=${prInfo.data.mergeable_state}`);
+    if (prInfo.data.mergeable === false) {
+      await fail('PR 存在合并冲突', [
+        `mergeable_state: \`${prInfo.data.mergeable_state}\``,
+        '',
+        '你的 PR 与 main 分支有冲突，可能是文件名和已有友链重复。',
+        '',
+        '**修复方法**：',
+        '1. 改用不同的文件名（如你的站点名）',
+        '2. 或者 rebase 你的 fork 到最新 main 分支',
+        '3. 解决冲突后 push 更新本 PR',
+      ]);
+      return;
+    }
+  } catch (e) {
+    core.warning(`检查 mergeable 失败: ${e.message}`);
+  }
+
   try {
     const mergeRes = await github.rest.pulls.merge({
       owner,

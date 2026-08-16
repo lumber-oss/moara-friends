@@ -26,7 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.MOARA_FRIENDS }}
           fetch-depth: 1
 
       - name: Setup Node.js

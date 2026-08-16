@@ -10,7 +10,7 @@ permissions:
   actions: write
 
 env:
-  PAT: ${{ secrets.GITHUB_TOKEN }}
+  PAT: ${{ secrets.MOARA_FRIENDS }}
 
 concurrency:
   group: auto-pr-${{ github.event.pull_request.number }}

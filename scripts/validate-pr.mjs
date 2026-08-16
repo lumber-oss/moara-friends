@@ -469,8 +469,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }),
       '',
       '---',
-      '修复后 push 到本 PR 会自动触发重新校验。  ',
+      '修复后，关闭并重新打开该 PR 会自动触发重新校验。 ',
       `[查看 Action 运行日志](${runUrl})`,
+      `联系[moara](moara@foxmail.com)`,
     ].join('\n');
     try {
       await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
@@ -896,6 +897,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       core.warning(`trigger build workflow failed: ${e.message}`);
     }
   } catch (e) {
-    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系仓库管理员。']);
+    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系[moara](moara@foxmail.com)。']);
   }
 }

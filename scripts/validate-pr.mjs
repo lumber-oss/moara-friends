@@ -139,13 +139,13 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
 }
 
 // Playwright 渲染抓取（处理 JS 动态渲染的友链页）
-// 浏览器按需安装——静态 fetch 找不到反链时才安装，节省大部分 PR 的时间
+// 浏览器按需安装——静态 fetch 找不到回链时才安装，节省大部分 PR 的时间
 let playwrightInstalled = false;
 
 async function ensurePlaywrightBrowser() {
   if (playwrightInstalled) return;
   const { execFileSync } = await import('node:child_process');
-  console.log('📦 安装 Playwright 浏览器（首次使用，约 20 秒）...');
+  console.log('📦 安装 Playwright 浏览器（约 20 秒）...');
   execFileSync('npx', ['playwright', 'install', 'chromium', '--with-deps'], {
     stdio: 'inherit',
     timeout: 120000,
@@ -361,7 +361,7 @@ async function checkUrlReachable(url, { requireImage = false } = {}) {
   return { ok: false, errors, redirects, attempts: 3 };
 }
 
-// ========== 反链验证 ==========
+// ========== 回链验证 ==========
 function verifyBacklink(html, expected) {
   if (!html || !expected) return { found: false, reason: 'empty input' };
   const target = expected.replace(/\/$/, '').toLowerCase();
@@ -488,7 +488,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
   }
 
-  // ── 0. 合并冲突检查（最优先，避免白做后续校验）──
+  // ── 0. 合并冲突检查 ──
   try {
     const prInfo = await github.rest.pulls.get({ owner, repo, pull_number });
     core.info(`pr.mergeable=${prInfo.data.mergeable}, pr.mergeable_state=${prInfo.data.mergeable_state}`);
@@ -506,7 +506,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     core.warning(`检查 mergeable 失败: ${e.message}`);
   }
 
-  // ── 1. PR 文件变更范围校验 ─────────────────────────
+  // ── 1. PR 文件变更范围校验 ──
   let files = [];
   try {
     for await (const res of github.paginate.iterator(
@@ -543,7 +543,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     return;
   }
 
-  // ── 2. 修改/删除操作：DNS TXT 域名所有权验证 ──────
+  // ── 2. 修改/删除操作：DNS TXT 域名所有权验证 ──
   // 不依赖 file.status（fork PR 总是 added），而是检查 main 是否已有该文件
   // 如果 main 已有 → 是修改/删除操作 → 需要 DNS 验证
   let fileExistsInMain = false;
@@ -567,7 +567,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
   if (fileExistsInMain) {
     const isDelete = file.status === 'removed' || (file.status === 'added' && !file.patch);
-    core.info(`检测到修改/删除操作（main 已有 ${file.filename}），需要 DNS TXT 域名所有权验证`);
+    core.info(`检测到修改/删除操作（已有 ${file.filename}），需要 DNS TXT 域名所有权验证`);
 
     if (originalUrl) {
       let hostname = null;
@@ -608,11 +608,11 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
   }
 
-  // ── 3. 删除操作：跳过内容校验 ────────────────────
+  // ── 3. 删除操作：跳过内容校验 ──
   if (file.status === 'removed') {
     core.info('删除操作，跳过校验');
   } else {
-    // ── 3. JSON 解析与 schema 校验 ─────────────────
+    // ── 3. JSON 解析与 schema 校验 ──
     if (!file.filename.endsWith('.json')) {
       await fail('文件类型不合法', [
         `检测到非 .json 文件：${file.filename}`,
@@ -622,7 +622,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
 
     let rawContent = '';
-    // 优先用 raw_url 读取完整文件内容（最可靠）
+    // 优先用 raw_url 读取完整文件内容
     // file.patch 解析有风险（大文件截断、二进制 diff 等）
     if (file.status === 'added' || file.status === 'modified') {
       try {
@@ -658,10 +658,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       ];
 
       if (/[""]/.test(rawContent)) {
-        lines.push('**检测到中文全角引号**（中文输入法常见问题）');
+        lines.push('**检测到中文全角引号**');
         lines.push('- ❌ 你用了：`"..."`（弯引号，左右配对）');
         lines.push('- ✅ 应改为：`"..."`（直引号，同一个字符）');
-        lines.push('- 区别：中文引号是弯的 `""`，ASCII 引号是直的 `""`');
         lines.push('');
       }
       if (/[：，]/.test(rawContent)) {
@@ -747,7 +746,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 5. SSRF 防护 ────────────────────────────────
+    // ── 5. SSRF 防护 ──
     const ssrfErrors = [];
     const urlSsrf = isPublicUrl(data.url);
     if (!urlSsrf.ok) ssrfErrors.push(`\`url\`：${urlSsrf.reason}`);
@@ -771,7 +770,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 6. backlink 域名一致性校验 ────────────────
+    // ── 6. backlink 域名一致性校验 ──
     const urlHost = getHostname(data.url);
     const backlinkHost = getHostname(data.backlink);
     if (urlHost && backlinkHost && urlHost !== backlinkHost) {
@@ -792,7 +791,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 7. URL + avatar 可达性检查（并行）─────────
+    // ── 7. URL + avatar 可达性检查（并行）───
     core.info('🌐 正在并行检查站点 URL 和头像 URL 可达性...');
 
     const tasks = [
@@ -824,12 +823,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 8. 反链验证 ────────────────────────────────
-    core.info(`🔗 正在抓取 backlink 页面检查反链：${data.backlink}`);
+    // ── 8. 回链验证 ───
+    core.info(`🔗 正在抓取友链页面检查回链：${data.backlink}`);
 
     const pageRes = await fetchPage(data.backlink);
     if (!pageRes.ok) {
-      await fail('反链验证：无法访问 backlink 页面', [
+      await fail('回链验证：无法访问友链页面', [
         `backlink URL：\`${data.backlink}\``,
         `抓取失败：${pageRes.errors.join('；')}`,
         '',
@@ -838,13 +837,13 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    core.info(`✓ backlink 页面抓取成功 (HTTP ${pageRes.status}, ${pageRes.text.length} bytes)`);
+    core.info(`✓ 友链页面抓取成功 (HTTP ${pageRes.status}, ${pageRes.text.length} bytes)`);
 
     let backlinkResult = verifyBacklink(pageRes.text, SITE_URL);
     let usedPlaywright = false;
 
     if (!backlinkResult.found) {
-      core.info(`⚠️ 静态 HTML 未找到反链，尝试用 Playwright 渲染（处理 JS 动态页面）...`);
+      core.info(`⚠️ 静态 HTML 未找到回链，尝试用 Playwright 渲染（处理 JS 动态页面）...`);
       const pwRes = await fetchWithPlaywright(data.backlink);
       if (pwRes.ok) {
         core.info(`✓ Playwright 渲染成功 (${pwRes.text.length} bytes)`);
@@ -870,16 +869,17 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         '**修复方法**：',
         `1. 在你的友链页添加：<a href="${SITE_URL}">沫然Blog</a>`,
         '2. 确保 href 是绝对链接且 URL 完全一致',
+        '3. 等待 CDN 刷新',
       ];
-      await fail('反链验证未通过', lines);
+      await fail('回链验证未通过', lines);
       return;
     }
 
-    core.info(`✓ 反链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`);
+    core.info(`✓ 回链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`);
   }
 
-  // ── 9. 自动合并 ────────────────────────────────────
-  core.info('✅ 所有校验通过（含反链验证 + SSRF 防护），执行自动合并');
+  // ── 9. 自动合并 ───
+  core.info('✅ 所有校验通过，执行自动合并');
 
   try {
     const mergeRes = await github.rest.pulls.merge({
@@ -888,7 +888,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       pull_number,
       merge_method: 'squash',
       commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
-      commit_message: `由 auto-pr workflow 自动合并（含反链验证 + SSRF 防护）\n\nCo-authored-by: ${prAuthor}`,
+      commit_message: `由 auto-pr workflow 自动合并\n\nCo-authored-by: ${prAuthor}`,
     });
     core.info(`✅ 合并成功：${mergeRes.data.sha}`);
 

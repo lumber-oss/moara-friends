@@ -62,6 +62,7 @@ export function isPublicUrl(urlStr) {
       if (a === 0) return { ok: false, reason: `拒绝 0.0.0.0/8：${ipv4}` };
       if (a === 100 && b >= 64 && b <= 127) return { ok: false, reason: `拒绝 CGNAT 100.64.0.0/10：${ipv4}` };
       if (a === 192 && b === 0 && parseInt(m[3]) === 2) return { ok: false, reason: `拒绝 TEST-NET-1 192.0.2.0/24：${ipv4}` };
+      if (a === 192 && b === 0 && parseInt(m[3]) === 0) return { ok: false, reason: `拒绝 IETF 协议分配 192.0.0.0/24：${ipv4}` };
       if (a === 198 && (b === 51 && parseInt(m[3]) === 100)) return { ok: false, reason: `拒绝 TEST-NET-2 198.51.100.0/24：${ipv4}` };
       if (a === 203 && b === 0 && parseInt(m[3]) === 113) return { ok: false, reason: `拒绝 TEST-NET-3 203.0.113.0/24：${ipv4}` };
       if (a === 198 && (b === 18 || b === 19)) return { ok: false, reason: `拒绝基准测试 198.18.0.0/15：${ipv4}` };

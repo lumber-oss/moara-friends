@@ -469,7 +469,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }),
       '',
       '---',
-      '修复后在该页面重新打开本 PR 会自动触发重新校验。  ',
+      '修复后 push 到本 PR 会自动触发重新校验。  ',
       `[查看 Action 运行日志](${runUrl})`,
     ].join('\n');
     try {
@@ -479,13 +479,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
 
     await syncLabels({ add: [LABEL_FRIEND, LABEL_FAIL], remove: [LABEL_OK] });
-
-    try {
-      await github.rest.pulls.update({ owner, repo, pull_number, state: 'closed' });
-      core.info('✓ PR 已自动关闭');
-    } catch (e) {
-      core.warning(`close PR failed: ${e.message}`);
-    }
   }
 
   // ── 0. 合并冲突检查 ──

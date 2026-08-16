@@ -120,6 +120,12 @@ console.log('\n📦 Loading friends from data/friends/ ...');
 const friends = loadAndValidate(DATA_FRIENDS);
 const sorted = sortFriends(friends);
 
+// 如果有无效文件，输出错误信息但不阻断构建（跳过无效文件继续）
+// 无效文件不会进入 friends.json，站主需要手动修复
+if (friends.length === 0 && sorted.length === 0) {
+  console.error('\n❌ 没有有效的友链数据，friends.json 将为空数组');
+}
+
 const json = JSON.stringify(sorted, null, 2) + '\n';
 fs.writeFileSync(OUT_FILE, json, 'utf-8');
 

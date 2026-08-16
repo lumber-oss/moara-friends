@@ -18,17 +18,30 @@ export function isPublicUrl(urlStr) {
     return { ok: false, reason: `拒绝 localhost：${hostname}` };
   }
 
-  const isIpv6 = hostname.startsWith('[') && hostname.endsWith(']');
-  if (isIpv6) hostname = hostname.slice(1, -1);
+  // IPv6 hostname 带方括号，先去掉再检查
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    hostname = hostname.slice(1, -1);
+  }
 
   let ipv4 = null;
   if (hostname.includes(':')) {
+    // IPv6（去括号后）
     if (hostname.includes('ffff:')) {
       return { ok: false, reason: `拒绝 IPv4-mapped IPv6：${hostname}` };
-    } else if (hostname === '::1' || hostname === '0:0:0:0:0:0:0:1') {
+    }
+    // 归一化：去掉前导零压缩
+    const normalized = hostname.replace(/(^|:)0+(?=:|$)/g, '$1').replace(/^0+:/, '0:');
+    if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
       return { ok: false, reason: `拒绝 IPv6 回环：${hostname}` };
-    } else if (hostname.startsWith('fe80:') || hostname.startsWith('fc') || hostname.startsWith('fd')) {
+    }
+    if (normalized.startsWith('fe80:') || normalized.startsWith('fc') || normalized.startsWith('fd')) {
       return { ok: false, reason: `拒绝 IPv6 链路本地/唯一本地：${hostname}` };
+    }
+    if (normalized.startsWith('ff')) {
+      return { ok: false, reason: `拒绝 IPv6 多播：${hostname}` };
+    }
+    if (normalized === '::' || normalized === '0:0:0:0:0:0:0:0') {
+      return { ok: false, reason: `拒绝 IPv6 未指定地址：${hostname}` };
     }
   } else {
     ipv4 = hostname;
@@ -48,6 +61,11 @@ export function isPublicUrl(urlStr) {
       if (a === 169 && b === 254) return { ok: false, reason: `拒绝链路本地 169.254.0.0/16：${ipv4}` };
       if (a === 0) return { ok: false, reason: `拒绝 0.0.0.0/8：${ipv4}` };
       if (a === 100 && b >= 64 && b <= 127) return { ok: false, reason: `拒绝 CGNAT 100.64.0.0/10：${ipv4}` };
+      if (a === 192 && b === 0 && parseInt(m[3]) === 2) return { ok: false, reason: `拒绝 TEST-NET-1 192.0.2.0/24：${ipv4}` };
+      if (a === 198 && (b === 51 && parseInt(m[3]) === 100)) return { ok: false, reason: `拒绝 TEST-NET-2 198.51.100.0/24：${ipv4}` };
+      if (a === 203 && b === 0 && parseInt(m[3]) === 113) return { ok: false, reason: `拒绝 TEST-NET-3 203.0.113.0/24：${ipv4}` };
+      if (a === 198 && (b === 18 || b === 19)) return { ok: false, reason: `拒绝基准测试 198.18.0.0/15：${ipv4}` };
+      if (a >= 224) return { ok: false, reason: `拒绝多播/保留地址：${ipv4}` };
     }
   }
   return { ok: true };
@@ -69,21 +87,47 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-      const res = await fetch(url, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: {
-          'User-Agent': ua,
-          'Accept': 'text/html,application/xhtml+xml,*/*',
-        },
-      });
-      clearTimeout(timer);
-      if (res.status >= 200 && res.status < 400) {
-        const text = await res.text();
-        return { ok: true, status: res.status, text, finalUrl: res.url };
+      let currentUrl = url;
+      let finalRes = null;
+      let hops = 0;
+
+      // 手动跟随重定向，每跳都做 SSRF 检查
+      while (hops < 5) {
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), timeout);
+        const res = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: c.signal,
+          headers: {
+            'User-Agent': ua,
+            'Accept': 'text/html,application/xhtml+xml,*/*',
+          },
+        });
+        clearTimeout(t);
+
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const location = res.headers.get('location');
+          if (!location) break;
+          const nextUrl = new URL(location, currentUrl).href;
+          const ssrfCheck = isPublicUrl(nextUrl);
+          if (!ssrfCheck.ok) {
+            return { ok: false, errors: [`重定向到非法地址：${ssrfCheck.reason}`] };
+          }
+          currentUrl = nextUrl;
+          hops++;
+          continue;
+        }
+
+        finalRes = res;
+        break;
       }
-      errors.push(`HTTP ${res.status}`);
+
+      if (finalRes && finalRes.status >= 200 && finalRes.status < 400) {
+        const text = await finalRes.text();
+        return { ok: true, status: finalRes.status, text, finalUrl: currentUrl };
+      }
+      errors.push(`HTTP ${finalRes ? finalRes.status : 'unknown'}`);
     } catch (e) {
       clearTimeout(timer);
       errors.push(e.name === 'AbortError' ? `超时(${timeout / 1000}s)` : e.message);
@@ -98,8 +142,11 @@ async function fetchWithPlaywright(url) {
   const { execFileSync } = await import('node:child_process');
   const fs = await import('node:fs');
   const path = await import('node:path');
+  const os = await import('node:os');
 
-  const scriptPath = path.join(process.cwd(), 'fetch-pw.mjs');
+  // 使用唯一临时目录，避免并发冲突
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moara-pw-'));
+  const scriptPath = path.join(tmpDir, 'fetch-pw.mjs');
   const script = `
     import { chromium } from '@playwright/test';
     const targetUrl = process.argv[2];
@@ -163,8 +210,9 @@ async function fetchWithPlaywright(url) {
 
   try {
     const output = execFileSync('node', [scriptPath, url], {
+      cwd: tmpDir,
       encoding: 'utf8',
-      timeout: 90000,  // 单次最多 45s × 2 + 间隔，放宽到 90s
+      timeout: 90000,
       maxBuffer: 20 * 1024 * 1024,
     });
     const result = JSON.parse(output.trim().split('\n').pop());
@@ -175,7 +223,7 @@ async function fetchWithPlaywright(url) {
   } catch (e) {
     return { ok: false, errors: [e.message] };
   } finally {
-    try { fs.unlinkSync(scriptPath); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
 }
 
@@ -205,12 +253,13 @@ async function checkUrlReachable(url, { requireImage = false } = {}) {
       let location = res.headers.get('location');
       let hops = 0;
       while ([301, 302, 303, 307, 308].includes(finalRes.status) && location && hops < 5) {
-        const redirectCheck = isPublicUrl(location);
+        // 先解析为绝对 URL，再做 SSRF 检查（location 可能是相对路径如 /newpage）
+        const nextUrl = new URL(location, url).href;
+        const redirectCheck = isPublicUrl(nextUrl);
         if (!redirectCheck.ok) {
           return { ok: false, errors: [`重定向到非法地址：${redirectCheck.reason}`], redirects, attempts: attempt + 1 };
         }
-        redirects.push(`${finalRes.status} → ${location}`);
-        const nextUrl = new URL(location, url).href;
+        redirects.push(`${finalRes.status} → ${nextUrl}`);
         const c2 = new AbortController();
         const t2 = setTimeout(() => c2.abort(), 15000);
         finalRes = await fetch(nextUrl, {
@@ -463,14 +512,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
 
     let rawContent = '';
-    if (file.patch) {
-      rawContent = file.patch
-        .split('\n')
-        .filter((line) => !line.startsWith('@@') && !line.startsWith('---') && !line.startsWith('+++'))
-        .map((line) => (line.startsWith('+') ? line.slice(1) : line.startsWith(' ') ? line.slice(1) : line))
-        .join('\n')
-        .trim();
-    } else if (file.status === 'added' || file.status === 'modified') {
+    // 优先用 raw_url 读取完整文件内容（最可靠）
+    // file.patch 解析有风险（大文件截断、二进制 diff 等）
+    if (file.status === 'added' || file.status === 'modified') {
       try {
         const res = await fetch(file.raw_url, {
           headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
@@ -478,8 +522,18 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         rawContent = await res.text();
       } catch (e) {
-        await fail('无法读取文件内容', [`错误：${e.message}`, `raw_url: ${file.raw_url}`]);
-        return;
+        // raw_url 失败时 fallback 到 patch 解析
+        if (file.patch) {
+          rawContent = file.patch
+            .split('\n')
+            .filter((line) => !line.startsWith('@@') && !line.startsWith('---') && !line.startsWith('+++'))
+            .map((line) => (line.startsWith('+') ? line.slice(1) : line.startsWith(' ') ? line.slice(1) : line))
+            .join('\n')
+            .trim();
+        } else {
+          await fail('无法读取文件内容', [`错误：${e.message}`, `raw_url: ${file.raw_url}`]);
+          return;
+        }
       }
     }
 

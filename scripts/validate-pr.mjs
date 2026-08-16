@@ -493,15 +493,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     const prInfo = await github.rest.pulls.get({ owner, repo, pull_number });
     core.info(`pr.mergeable=${prInfo.data.mergeable}, pr.mergeable_state=${prInfo.data.mergeable_state}`);
     if (prInfo.data.mergeable === false) {
-      await fail('PR 存在合并冲突', [
-        `mergeable_state: \`${prInfo.data.mergeable_state}\``,
-        '',
-        '你的 PR 与 main 分支有冲突，可能是文件名和已有友链重复。',
+      await fail('存在合并冲突', [
+        '你的 PR 有冲突，可能是文件名和已有友链重复。',
         '',
         '**修复方法**：',
-        '1. 改用不同的文件名（如你的站点名）',
-        '2. 或者 rebase 你的 fork 到最新 main 分支',
-        '3. 解决冲突后 push 更新本 PR',
+        '1. 改用不同的文件名',
+        '2. Sync fork 与本仓库完全同步，重新修改',
       ]);
       return;
     }
@@ -519,14 +516,14 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       files.push(...res.data);
     }
   } catch (e) {
-    await fail('无法读取 PR 文件清单', [`错误：${e.message}`]);
+    await fail('无法读取文件清单', [`错误：${e.message}`]);
     return;
   }
 
   if (files.length !== 1) {
-    await fail('PR 只能包含一个文件变更', [
+    await fail('只能包含一个文件变更', [
       `当前变更数：${files.length}`,
-      '请保证每个 PR 仅新增/修改/删除 data/friends/ 下单个 .json 文件。',
+      '请保证每个 PR 仅新增/修改/删除 data/friends/ 下单个 .json 文件',
     ]);
     return;
   }
@@ -536,7 +533,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   if (!file.filename.startsWith(FRIENDS_PREFIX)) {
     await fail('文件路径不合法', [
       `检测到文件：${file.filename}`,
-      `只允许更改 ${FRIENDS_PREFIX} 下的文件。`,
+      '只允许更改 data/friends/ 下的文件',
     ]);
     return;
   }
@@ -596,11 +593,10 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
         if (!verified) {
           await fail('域名所有权验证失败', [
-            `检测到你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
+            `你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
             '',
             `1. 在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
             `2. 记录内容：\`${expected}\``,
-            '3. 添加完成后 push 更新本 PR 触发重新校验',
             '',
             `原始文件 URL：\`${originalUrl}\``,
           ]);
@@ -620,7 +616,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     if (!file.filename.endsWith('.json')) {
       await fail('文件类型不合法', [
         `检测到非 .json 文件：${file.filename}`,
-        'data/friends/ 下只允许 .json 文件。',
+        'data/friends/ 下只允许 .json 文件',
       ]);
       return;
     }
@@ -700,17 +696,15 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }
 
       lines.push('**修复方法**：');
-      lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验你的 JSON 语法');
-      lines.push('2. 把所有中文引号 `"..."` 替换为 ASCII 引号 `"..."`');
-      lines.push('3. 把所有中文标点 `：，` 替换为 ASCII 标点 `:,`');
-      lines.push('4. 修改后 push 到本 PR 触发重新校验');
+      lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验');
+      lines.push('2. 把中文符号替换为英文符号');
 
-      await fail('JSON 解析失败', lines);
+      await fail('解析失败', lines);
       return;
     }
 
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      await fail('JSON 类型错误', ['JSON 必须是对象，不能是数组或基本类型。']);
+      await fail('JSON 类型错误', ['JSON 必须是对象，不能是数组或基本类型']);
       return;
     }
 
@@ -740,10 +734,10 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     }
 
     if (Object.prototype.hasOwnProperty.call(data, 'vip')) {
-      await fail('检测到 vip 字段，已终止', [
-        'vip 字段仅站主直推 main 时可用，PR 不可携带。',
+      await fail('检测到 vip 字段', [
+        'vip 字段仅站主直推可用，PR 不可携带',
         `文件：${file.filename}`,
-        '请删除 vip 字段后重新 push。',
+        '请删除 vip 字段',
       ]);
       return;
     }
@@ -767,12 +761,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     if (!blSsrf.ok) ssrfErrors.push(`\`backlink\`：${blSsrf.reason}`);
 
     if (ssrfErrors.length) {
-      await fail('SSRF 防护：URL 不合法', [
-        '检测到不可访问的地址（仅允许公网 http/https 地址）：',
+      await fail('URL 不合法', [
+        '检测到不可访问的地址：',
         '',
         ...ssrfErrors,
         '',
-        '禁止使用：localhost、私有 IP（10.x / 172.16-31.x / 192.168.x）、链路本地（169.254.x）、云元数据端点等。',
+        '禁止使用：localhost、私有 IP、链路本地、云元数据端点等',
       ]);
       return;
     }
@@ -782,9 +776,9 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     const backlinkHost = getHostname(data.backlink);
     if (urlHost && backlinkHost && urlHost !== backlinkHost) {
       await fail('backlink 域名不一致', [
-        `你的 url 主域名：\`${urlHost}\``,
-        `你的 backlink 主域名：\`${backlinkHost}\``,
-        '两者必须一致（backlink 必须是你自己网站的友链页）。',
+        `你的 url 域名：\`${urlHost}\``,
+        `你的 backlink 域名：\`${backlinkHost}\``,
+        '两者必须一致（backlink 必须是你自己网站的友链页）',
       ]);
       return;
     }
@@ -792,7 +786,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     const siteHost = getHostname(SITE_URL);
     if (backlinkHost && siteHost && backlinkHost === siteHost) {
       await fail('backlink 指向本站', [
-        'backlink 字段应填写**你自己**网站的友链页 URL，不能指向本站。',
+        'backlink 字段应填写你自己网站的友链页 URL，不能指向本站',
         `本站 URL：\`${SITE_URL}\``,
       ]);
       return;
@@ -826,7 +820,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
           lines.push('');
         }
       }
-      await fail('URL 可达性检查未通过', lines);
+      await fail('可达性检查未通过', lines);
       return;
     }
 
@@ -839,7 +833,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         `backlink URL：\`${data.backlink}\``,
         `抓取失败：${pageRes.errors.join('；')}`,
         '',
-        '请确认你的友链页 URL 正确且可公开访问。',
+        '请确认你的友链页 URL 正确且可公开访问',
       ]);
       return;
     }
@@ -863,24 +857,19 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
     if (!backlinkResult.found) {
       const lines = [
-        `在 backlink 页面未检测到本站友链链接。`,
+        `未检测到本站友链链接`,
         '',
         `**需要添加的链接**：\`${SITE_URL}\``,
-        `**你的 backlink 页面**：\`${data.backlink}\``,
-        '',
-        usedPlaywright
-          ? `已用 Playwright 渲染 JS 后仍找不到（页面中检测到 ${backlinkResult.links.length} 个 http(s) 链接，都不匹配）`
-          : `静态 HTML 中检测到 ${backlinkResult.links.length} 个 http(s) 链接，都不匹配；Playwright 渲染失败或未执行`,
+        `**你的友链页面**：\`${data.backlink}\``,
         '',
         '**常见原因**：',
         '- 友链页还没添加本站链接，或链接 URL 不完全一致',
         '- 友链页需要登录或被防火墙拦截',
-        '- CDN 缓存返回了旧版本（等待几分钟后再 push）',
+        '- CDN 缓存返回了旧版本',
         '',
         '**修复方法**：',
         `1. 在你的友链页添加：<a href="${SITE_URL}">沫然Blog</a>`,
         '2. 确保 href 是绝对链接且 URL 完全一致',
-        '3. push 更新本 PR 触发重新校验',
       ];
       await fail('反链验证未通过', lines);
       return;

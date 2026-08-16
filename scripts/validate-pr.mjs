@@ -469,9 +469,8 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }),
       '',
       '---',
-      '修复后，关闭并重新打开该 PR 会自动触发重新校验。 ',
-      `[查看 Action 运行日志](${runUrl})`,
-      `联系[moara](moara@foxmail.com)`,
+      '解决后，关闭并重新打开该 PR 会自动触发重新校验。',
+      `[查看 Action 运行日志](${runUrl})；[联系moara](mailto:moara@foxmail.com)`,
     ].join('\n');
     try {
       await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
@@ -490,7 +489,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       await fail('存在合并冲突', [
         '你的 PR 有冲突，可能是文件名和已有友链重复。',
         '',
-        '**修复方法**：',
+        '**解决方法**：',
         '1. 改用不同的文件名',
         '2. Sync fork 与本仓库完全同步，重新修改',
       ]);
@@ -688,7 +687,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         lines.push('');
       }
 
-      lines.push('**修复方法**：');
+      lines.push('**解决方法**：');
       lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验');
       lines.push('2. 把中文符号替换为英文符号');
 
@@ -860,7 +859,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         '- 友链页需要登录或被防火墙拦截',
         '- CDN 缓存返回了旧版本',
         '',
-        '**修复方法**：',
+        '**解决方法**：',
         `1. 在你的友链页添加：<a href="${SITE_URL}">沫然Blog</a>`,
         '2. 确保 href 是绝对链接且 URL 完全一致',
         '3. 等待 CDN 刷新',
@@ -897,6 +896,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       core.warning(`trigger build workflow failed: ${e.message}`);
     }
   } catch (e) {
-    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系[moara](moara@foxmail.com)。']);
+    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系[moara](mailto:moara@foxmail.com)。']);
   }
 }

@@ -455,8 +455,8 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   }
 
   async function fail(title, lines) {
-    core.error(`❌ ${title}`);
-    for (const l of lines) core.error(`  - ${l}`);
+    core.info(`❌ ${title}`);
+    for (const l of lines) core.info(`  - ${l}`);
 
     const body = [
       `## ❌ ${title}`,

@@ -502,24 +502,30 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   }
 
   // ── 2. 修改/删除操作：DNS TXT 域名所有权验证 ──────
-  if (file.status === 'modified' || file.status === 'removed') {
-    const isDelete = file.status === 'removed';
-    core.info(`检测到${isDelete ? '删除' : '修改'}操作，需要 DNS TXT 域名所有权验证`);
-
-    // 从 base 分支读取原始文件内容，获取 url 的 hostname
-    let originalUrl = null;
-    try {
-      const baseRes = await github.rest.repos.getContent({
-        owner, repo, path: file.filename, ref: baseSha,
-      });
-      if (!Array.isArray(baseRes.data) && baseRes.data.content) {
-        const raw = Buffer.from(baseRes.data.content, baseRes.data.encoding || 'base64').toString('utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed.url) originalUrl = parsed.url;
-      }
-    } catch (e) {
-      core.warning(`读取 base 文件失败: ${e.message}`);
+  // 不依赖 file.status（fork PR 总是 added），而是检查 main 是否已有该文件
+  // 如果 main 已有 → 是修改/删除操作 → 需要 DNS 验证
+  let fileExistsInMain = false;
+  let originalUrl = null;
+  try {
+    const baseRes = await github.rest.repos.getContent({
+      owner, repo, path: file.filename, ref: baseSha,
+    });
+    if (!Array.isArray(baseRes.data) && baseRes.data.content) {
+      fileExistsInMain = true;
+      const raw = Buffer.from(baseRes.data.content, baseRes.data.encoding || 'base64').toString('utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.url) originalUrl = parsed.url;
     }
+  } catch (e) {
+    // 404 = 文件不存在于 main → 新增操作，不需要 DNS 验证
+    if (e.status !== 404) {
+      core.warning(`检查 base 文件失败: ${e.message}`);
+    }
+  }
+
+  if (fileExistsInMain) {
+    const isDelete = file.status === 'removed' || (file.status === 'added' && !file.patch);
+    core.info(`检测到修改/删除操作（main 已有 ${file.filename}），需要 DNS TXT 域名所有权验证`);
 
     if (originalUrl) {
       let hostname = null;
@@ -545,7 +551,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
         if (!verified) {
           await fail('域名所有权验证失败', [
-            `检测到你正在${isDelete ? '删除' : '修改'}现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
+            `检测到你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
             '',
             `1. 在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
             `2. 记录内容：\`${expected}\``,

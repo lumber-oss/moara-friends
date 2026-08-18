@@ -950,8 +950,8 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   // ── 8. 自动合并 ───
   core.info('✅ 所有校验通过，执行自动合并');
 
-  try {
-    const mergeRes = await github.rest.pulls.merge({
+  async function attemptMerge() {
+    return github.rest.pulls.merge({
       owner,
       repo,
       pull_number,
@@ -959,19 +959,43 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       commit_title: `friends: ${file.status} ${file.filename} (#${pull_number})`,
       commit_message: `由 auto-pr workflow 自动合并\n\nCo-authored-by: ${prAuthor}`,
     });
-    core.info(`✅ 合并成功：${mergeRes.data.sha}`);
+  }
 
-    await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_FAIL] });
+  let mergeRes = null;
+  let mergeError = null;
 
-    try {
-      await github.rest.actions.createWorkflowDispatch({
-        owner, repo, workflow_id: 'build.yml', ref: 'main',
-      });
-      core.info('✅ build workflow 已触发');
-    } catch (e) {
-      core.warning(`trigger build workflow failed: ${e.message}`);
-    }
+  try {
+    mergeRes = await attemptMerge();
   } catch (e) {
-    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或[联系 moara](mailto:moara@foxmail.com)']);
+    core.warning(`合并第一次失败：${e.message}，3 秒后重试...`);
+    mergeError = e;
+  }
+
+  if (mergeError) {
+    await sleep(3000);
+    try {
+      mergeRes = await attemptMerge();
+      mergeError = null;
+    } catch (e2) {
+      mergeError = e2;
+    }
+  }
+
+  if (mergeError) {
+    await fail('自动合并失败', [`错误：${mergeError.message}`, '请手动合并此 PR 或[联系 moara](mailto:moara@foxmail.com)']);
+    return;
+  }
+
+  core.info(`✅ 合并成功：${mergeRes.data.sha}`);
+
+  await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_FAIL] });
+
+  try {
+    await github.rest.actions.createWorkflowDispatch({
+      owner, repo, workflow_id: 'build.yml', ref: 'main',
+    });
+    core.info('✅ build workflow 已触发');
+  } catch (e) {
+    core.warning(`trigger build workflow failed: ${e.message}`);
   }
 }

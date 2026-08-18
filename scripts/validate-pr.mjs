@@ -25,7 +25,7 @@ async function verifyFile(hostname, expectedCode) {
     while (hops < 5) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10000);
+        const timer = setTimeout(() => controller.abort(), 15000);
         const res = await fetch(currentUrl, {
           method: 'GET',
           redirect: 'manual',

@@ -1,3 +1,45 @@
+// ========== 域名所有权验证 ==========
+// 两种方式（任一通过即可）：
+//   A. DNS TXT 记录：hostname 或 _moara-friends.hostname 的 TXT 记录包含验证码
+//   B. 文件验证：https://hostname/.moara-friends-verify.txt 内容包含验证码
+
+async function verifyDnsTxt(hostname, expectedCode) {
+  const dns = (await import('node:dns')).promises;
+  const domains = [hostname, `_moara-friends.${hostname}`];
+  for (const d of domains) {
+    try {
+      const records = await dns.resolveTxt(d);
+      const flat = records.flat();
+      if (flat.some(t => t.includes(expectedCode))) {
+        return d;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function verifyFile(hostname, expectedCode) {
+  const verifyUrl = `https://${hostname}/.moara-friends-verify.txt`;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(verifyUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'moara-friends-bot/1.0' },
+    });
+    clearTimeout(timer);
+    if (res.status >= 200 && res.status < 400) {
+      const text = await res.text();
+      if (text.includes(expectedCode)) {
+        return verifyUrl;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 // ========== SSRF 防护 ==========
 export function isPublicUrl(urlStr) {
   let u;
@@ -536,9 +578,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     return;
   }
 
-  // ── 2. 修改/删除操作：DNS TXT 域名所有权验证 ──
+  // ── 2. 修改/删除操作：域名所有权验证 ──
   // 不依赖 file.status（fork PR 总是 added），而是检查 main 是否已有该文件
-  // 如果 main 已有 → 是修改/删除操作 → 需要 DNS 验证
+  // 如果 main 已有 → 是修改/删除操作 → 需要域名所有权验证
+  // 支持两种验证方式（任一通过即可）：
+  //   A. DNS TXT 记录：hostname 或 _moara-friends.hostname 的 TXT 记录
+  //   B. 文件验证：https://hostname/.moara-friends-verify.txt 内容包含验证码
   let fileExistsInMain = false;
   let originalUrl = null;
   try {
@@ -552,52 +597,64 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       if (parsed.url) originalUrl = parsed.url;
     }
   } catch (e) {
-    // 404 = 文件不存在于 main → 新增操作，不需要 DNS 验证
     if (e.status !== 404) {
       core.warning(`检查 base 文件失败: ${e.message}`);
     }
   }
 
   if (fileExistsInMain) {
-    const isDelete = file.status === 'removed' || (file.status === 'added' && !file.patch);
-    core.info(`检测到修改/删除操作（已有 ${file.filename}），需要 DNS TXT 域名所有权验证`);
+    core.info(`检测到修改/删除操作（已有 ${file.filename}），需要域名所有权验证`);
 
-    if (originalUrl) {
+    if (!originalUrl) {
+      core.warning('无法读取原始文件 URL，跳过域名验证');
+    } else {
       let hostname = null;
       try { hostname = new URL(originalUrl).hostname; } catch {}
 
-      if (hostname) {
-        const expected = `moara-friends=${pull_number}`;
-        const dns = (await import('node:dns')).promises;
-        const domains = [hostname, `_moara-friends.${hostname}`];
+      if (!hostname) {
+        core.warning('无法解析原始 URL 的 hostname，跳过域名验证');
+      } else {
+        const verificationCode = `moara-friends=${pull_number}`;
         let verified = false;
+        let verifiedMethod = null;
 
-        for (const d of domains) {
-          try {
-            const records = await dns.resolveTxt(d);
-            const flat = records.flat();
-            if (flat.some(t => t.includes(expected))) {
-              verified = true;
-              core.info(`✓ DNS TXT 验证通过: ${d}`);
-              break;
-            }
-          } catch {}
+        // 方式 A：DNS TXT 记录
+        if (!verified) {
+          const dnsResult = await verifyDnsTxt(hostname, verificationCode);
+          if (dnsResult) {
+            verified = true;
+            verifiedMethod = `DNS TXT (${dnsResult})`;
+          }
         }
 
+        // 方式 B：文件验证
         if (!verified) {
+          const fileResult = await verifyFile(hostname, verificationCode);
+          if (fileResult) {
+            verified = true;
+            verifiedMethod = `文件验证 (${fileResult})`;
+          }
+        }
+
+        if (verified) {
+          core.info(`✓ 域名所有权验证通过: ${verifiedMethod}`);
+        } else {
           await fail('域名所有权验证失败', [
-            `你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证：`,
+            '你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证（以下两种方式任选其一）：',
             '',
-            `1. 在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
-            `2. 记录内容：\`${expected}\``,
+            '**方式 A：DNS TXT 记录**',
+            `在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
+            `记录内容：\`${verificationCode}\``,
+            '',
+            '**方式 B：文件验证**',
+            `在 \`${hostname}\` 网站根目录上传文件 \`.moara-friends-verify.txt\``,
+            `文件内容：\`${verificationCode}\``,
             '',
             `原始文件 URL：\`${originalUrl}\``,
           ]);
           return;
         }
       }
-    } else {
-      core.warning('无法读取原始文件 URL，跳过 DNS 验证');
     }
   }
 

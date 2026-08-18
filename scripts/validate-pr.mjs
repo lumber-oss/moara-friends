@@ -19,24 +19,28 @@ async function verifyDnsTxt(hostname, expectedCode) {
 }
 
 async function verifyFile(hostname, expectedCode) {
-  const verifyUrl = `https://${hostname}/.moara-friends-verify.txt`;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(verifyUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { 'User-Agent': 'moara-friends-bot/1.0' },
-    });
-    clearTimeout(timer);
-    if (res.status >= 200 && res.status < 400) {
-      const text = await res.text();
-      if (text.includes(expectedCode)) {
-        return verifyUrl;
+  const filePath = `/.moara-friends-verify.txt`;
+  // 先 https 再 http fallback（部分免费托管无 SSL 证书）
+  for (const proto of ['https', 'http']) {
+    const verifyUrl = `${proto}://${hostname}${filePath}`;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(verifyUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'moara-friends-bot/1.0' },
+      });
+      clearTimeout(timer);
+      if (res.status >= 200 && res.status < 400) {
+        const text = await res.text();
+        if (text.includes(expectedCode)) {
+          return verifyUrl;
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   return null;
 }
 

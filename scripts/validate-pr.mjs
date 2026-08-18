@@ -15,6 +15,8 @@ async function verifyDnsTxt(hostname, expectedCode) {
 }
 
 async function verifyFile(hostname, expectedCode) {
+  const ssrfCheck = isPublicUrl(`https://${hostname}/`);
+  if (!ssrfCheck.ok) return null;
   for (const proto of ['https', 'http']) {
     const verifyUrl = `${proto}://${hostname}/.moara-friends-verify.txt`;
     try {
@@ -22,7 +24,7 @@ async function verifyFile(hostname, expectedCode) {
       const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(verifyUrl, {
         method: 'GET',
-        redirect: 'follow',
+        redirect: 'manual',
         signal: controller.signal,
         headers: { 'User-Agent': 'moara-friends-bot/1.0' },
       });

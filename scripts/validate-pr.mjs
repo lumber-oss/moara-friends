@@ -944,7 +944,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    core.info(`✓ 回链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`);
+    core.info(`✓ 回链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? ' （Playwright 渲染）' : ' （静态 HTML）'}`);
   }
 
   // ── 8. 自动合并 ───

@@ -171,7 +171,7 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
           const nextUrl = new URL(location, currentUrl).href;
           const ssrfCheck = isPublicUrl(nextUrl);
           if (!ssrfCheck.ok) {
-            return { ok: false, errors: [`重定向到非法地址：${ssrfCheck.reason}`] };
+            return { ok: false, errors: [`SSRF 拦截：重定向到 ${nextUrl}（${ssrfCheck.reason}）`] };
           }
           currentUrl = nextUrl;
           hops++;
@@ -333,7 +333,7 @@ async function checkUrlReachable(url, { requireImage = false } = {}) {
         const nextUrl = new URL(location, url).href;
         const redirectCheck = isPublicUrl(nextUrl);
         if (!redirectCheck.ok) {
-          return { ok: false, errors: [`重定向到非法地址：${redirectCheck.reason}`], redirects, attempts: attempt + 1 };
+          return { ok: false, errors: [`SSRF 拦截：重定向到 ${nextUrl}（${redirectCheck.reason}）`], redirects, attempts: attempt + 1 };
         }
         redirects.push(`${finalRes.status} → ${nextUrl}`);
         const c2 = new AbortController();

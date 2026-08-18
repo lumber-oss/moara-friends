@@ -972,6 +972,6 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       core.warning(`trigger build workflow failed: ${e.message}`);
     }
   } catch (e) {
-    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或联系[moara](mailto:moara@foxmail.com)。']);
+    await fail('自动合并失败', [`错误：${e.message}`, '请手动合并此 PR 或[联系 moara](mailto:moara@foxmail.com)']);
   }
 }

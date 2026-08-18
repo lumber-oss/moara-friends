@@ -15,27 +15,47 @@ async function verifyDnsTxt(hostname, expectedCode) {
 }
 
 async function verifyFile(hostname, expectedCode) {
-  const ssrfCheck = isPublicUrl(`https://${hostname}/`);
-  if (!ssrfCheck.ok) return null;
+  const initialCheck = isPublicUrl(`https://${hostname}/`);
+  if (!initialCheck.ok) return null;
+
   for (const proto of ['https', 'http']) {
-    const verifyUrl = `${proto}://${hostname}/.moara-friends-verify.txt`;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(verifyUrl, {
-        method: 'GET',
-        redirect: 'manual',
-        signal: controller.signal,
-        headers: { 'User-Agent': 'moara-friends-bot/1.0' },
-      });
-      clearTimeout(timer);
-      if (res.status >= 200 && res.status < 400) {
-        const text = await res.text();
-        if (text.includes(expectedCode)) {
-          return verifyUrl;
+    let currentUrl = `${proto}://${hostname}/.moara-friends-verify.txt`;
+    let hops = 0;
+
+    while (hops < 5) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        const res = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'moara-friends-bot/1.0' },
+        });
+        clearTimeout(timer);
+
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const location = res.headers.get('location');
+          if (!location) break;
+          const nextUrl = new URL(location, currentUrl).href;
+          const ssrfCheck = isPublicUrl(nextUrl);
+          if (!ssrfCheck.ok) break;
+          currentUrl = nextUrl;
+          hops++;
+          continue;
         }
+
+        if (res.status >= 200 && res.status < 400) {
+          const text = await res.text();
+          if (text.includes(expectedCode)) {
+            return currentUrl;
+          }
+        }
+        break;
+      } catch {
+        break;
       }
-    } catch {}
+    }
   }
   return null;
 }

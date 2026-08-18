@@ -460,6 +460,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   // ========== Tag 管理 ==========
   const LABEL_FRIEND = '友链';
   const LABEL_OK = '已互链';
+  const LABEL_DELETED = '已删除';
   const LABEL_FAIL = '未通过';
 
   async function ensureLabel(name, color) {
@@ -480,7 +481,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   }
 
   async function syncLabels({ add = [], remove = [] }) {
-    const labelColors = { [LABEL_FRIEND]: '0e8a16', [LABEL_OK]: '0e8a16', [LABEL_FAIL]: 'd73a4a' };
+    const labelColors = { [LABEL_FRIEND]: '0e8a16', [LABEL_OK]: '0e8a16', [LABEL_DELETED]: '6f42c1', [LABEL_FAIL]: 'd73a4a' };
     for (const name of add) {
       await ensureLabel(name, labelColors[name] || 'ededed');
     }
@@ -988,7 +989,12 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
 
   core.info(`✅ 合并成功：${mergeRes.data.sha}`);
 
-  await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_FAIL] });
+  const isDelete = file.status === 'removed';
+  if (isDelete) {
+    await syncLabels({ add: [LABEL_FRIEND, LABEL_DELETED], remove: [LABEL_OK, LABEL_FAIL] });
+  } else {
+    await syncLabels({ add: [LABEL_FRIEND, LABEL_OK], remove: [LABEL_DELETED, LABEL_FAIL] });
+  }
 
   try {
     await github.rest.actions.createWorkflowDispatch({

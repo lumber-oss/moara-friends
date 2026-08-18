@@ -1,3 +1,4 @@
+// ========== 域名所有权验证 ==========
 async function verifyDnsTxt(hostname, expectedCode) {
   const dns = (await import('node:dns')).promises;
   const domains = [hostname, `_moara-friends.${hostname}`];
@@ -37,6 +38,7 @@ async function verifyFile(hostname, expectedCode) {
   return null;
 }
 
+// ========== SSRF 防护 ==========
 export function isPublicUrl(urlStr) {
   let u;
   try {
@@ -56,18 +58,15 @@ export function isPublicUrl(urlStr) {
     return { ok: false, reason: `拒绝 localhost：${hostname}` };
   }
 
-  // IPv6 hostname 带方括号，先去掉再检查
   if (hostname.startsWith('[') && hostname.endsWith(']')) {
     hostname = hostname.slice(1, -1);
   }
 
   let ipv4 = null;
   if (hostname.includes(':')) {
-    // IPv6（去括号后）
     if (hostname.includes('ffff:')) {
       return { ok: false, reason: `拒绝 IPv4-mapped IPv6：${hostname}` };
     }
-    // 归一化：去掉前导零压缩
     const normalized = hostname.replace(/(^|:)0+(?=:|$)/g, '$1').replace(/^0+:/, '0:');
     if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
       return { ok: false, reason: `拒绝 IPv6 回环：${hostname}` };
@@ -110,6 +109,7 @@ export function isPublicUrl(urlStr) {
   return { ok: true };
 }
 
+// ========== 可达性检查 ==========
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
@@ -129,7 +129,6 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
       let finalRes = null;
       let hops = 0;
 
-      // 手动跟随重定向，每跳都做 SSRF 检查
       while (hops < 5) {
         const c = new AbortController();
         const t = setTimeout(() => c.abort(), timeout);
@@ -175,6 +174,8 @@ async function fetchPage(url, { timeout = 15000 } = {}) {
   return { ok: false, errors };
 }
 
+// Playwright 渲染抓取（处理 JS 动态渲染的友链页）
+// 浏览器按需安装，静态 fetch 找不到回链时才安装
 let playwrightInstalled = false;
 
 async function ensurePlaywrightBrowser() {
@@ -197,7 +198,6 @@ async function fetchWithPlaywright(url) {
   const path = await import('node:path');
   const os = await import('node:os');
 
-  // 使用唯一临时目录，避免并发冲突
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moara-pw-'));
   const scriptPath = path.join(tmpDir, 'fetch-pw.mjs');
   const script = `
@@ -308,7 +308,6 @@ async function checkUrlReachable(url, { requireImage = false } = {}) {
       let location = res.headers.get('location');
       let hops = 0;
       while ([301, 302, 303, 307, 308].includes(finalRes.status) && location && hops < 5) {
-        // 先解析为绝对 URL，再做 SSRF 检查（location 可能是相对路径如 /newpage）
         const nextUrl = new URL(location, url).href;
         const redirectCheck = isPublicUrl(nextUrl);
         if (!redirectCheck.ok) {
@@ -534,7 +533,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     core.warning(`检查 mergeable 失败: ${e.message}`);
   }
 
-  // ── 1. PR 文件变更范围校验 ──
+  // ── 1. 文件变更范围校验 ──
   let files = [];
   try {
     for await (const res of github.paginate.iterator(
@@ -571,9 +570,85 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     return;
   }
 
-  // ── 2. JSON 解析与 schema 校验（删除操作跳过）──
+  // ── 2. 修改/删除操作：域名所有权验证 ──
+  // 如果 main 已有 → 是修改/删除操作 → 需要域名所有权验证
+  // 两种方式（任一通过即可）：DNS TXT 记录、文件验证
+  let fileExistsInMain = false;
+  let originalUrl = null;
+  try {
+    const baseRes = await github.rest.repos.getContent({
+      owner, repo, path: file.filename, ref: baseSha,
+    });
+    if (!Array.isArray(baseRes.data) && baseRes.data.content) {
+      fileExistsInMain = true;
+      const raw = Buffer.from(baseRes.data.content, baseRes.data.encoding || 'base64').toString('utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.url) originalUrl = parsed.url;
+    }
+  } catch (e) {
+    if (e.status !== 404) {
+      core.warning(`检查 base 文件失败: ${e.message}`);
+    }
+  }
+
+  if (fileExistsInMain) {
+    core.info(`检测到修改/删除操作（已有 ${file.filename}），需要域名所有权验证`);
+
+    if (!originalUrl) {
+      core.warning('无法读取原始文件 URL，跳过域名验证');
+    } else {
+      let hostname = null;
+      try { hostname = new URL(originalUrl).hostname; } catch {}
+
+      if (!hostname) {
+        core.warning('无法解析原始 URL 的 hostname，跳过域名验证');
+      } else {
+        const verificationCode = `moara-friends=${pull_number}`;
+        let verified = false;
+        let verifiedMethod = null;
+
+        // A：DNS TXT 记录
+        if (!verified) {
+          const dnsResult = await verifyDnsTxt(hostname, verificationCode);
+          if (dnsResult) {
+            verified = true;
+            verifiedMethod = `DNS TXT (${dnsResult})`;
+          }
+        }
+
+        // B：文件验证
+        if (!verified) {
+          const fileResult = await verifyFile(hostname, verificationCode);
+          if (fileResult) {
+            verified = true;
+            verifiedMethod = `文件验证 (${fileResult})`;
+          }
+        }
+
+        if (verified) {
+          core.info(`✓ 域名所有权验证通过: ${verifiedMethod}`);
+        } else {
+          await fail('域名所有权验证失败', [
+            '你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证（以下两种方式任选其一）：',
+            '',
+            '**A：DNS TXT 记录**',
+            `在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
+            `记录内容：\`${verificationCode}\``,
+            '',
+            '**B：文件验证**',
+            `在 \`${originalUrl}\` 网站根目录上传文件 \`.moara-friends-verify.txt\``,
+            `文件内容：\`${verificationCode}\``,
+            '',
+          ]);
+          return;
+        }
+      }
+    }
+  }
+
+  // ── 3. JSON 解析与 schema 校验 ──
   if (file.status === 'removed') {
-    core.info('删除操作，跳过内容校验');
+    core.info('删除操作，跳过校验');
   } else {
     if (!file.filename.endsWith('.json')) {
       await fail('文件类型不合法', [
@@ -657,7 +732,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       }
 
       lines.push('**解决方法**：');
-      lines.push('1. 用 [JSONLint](https://jsonlint.com/) 校验');
+      lines.push('1. 用 [JSONLint](https://jsonlint.com) 校验');
       lines.push('2. 把中文符号替换为英文符号');
 
       await fail('解析失败', lines);
@@ -708,7 +783,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 3. SSRF 防护 ──
+    // ── 4. SSRF 防护 ──
     const ssrfErrors = [];
     const urlSsrf = isPublicUrl(data.url);
     if (!urlSsrf.ok) ssrfErrors.push(`\`url\`：${urlSsrf.reason}`);
@@ -732,13 +807,13 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 4. backlink 域名一致性 ──
+    // ── 5. 回链域名一致性校验 ──
     const urlHost = getHostname(data.url);
     const backlinkHost = getHostname(data.backlink);
     if (urlHost && backlinkHost && urlHost !== backlinkHost) {
-      await fail('backlink 域名不一致', [
-        `你的 url 域名：\`${urlHost}\``,
-        `你的 backlink 域名：\`${backlinkHost}\``,
+      await fail('回链域名不一致', [
+        `你的 url：\`${urlHost}\``,
+        `你的 backlink：\`${backlinkHost}\``,
         '两者必须一致（backlink 必须是你自己网站的友链页）',
       ]);
       return;
@@ -753,78 +828,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 5. 域名所有权验证（修改/删除时）──
-    let fileExistsInMain = false;
-    let originalUrl = null;
-    try {
-      const baseRes = await github.rest.repos.getContent({
-        owner, repo, path: file.filename, ref: baseSha,
-      });
-      if (!Array.isArray(baseRes.data) && baseRes.data.content) {
-        fileExistsInMain = true;
-        const raw = Buffer.from(baseRes.data.content, baseRes.data.encoding || 'base64').toString('utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed.url) originalUrl = parsed.url;
-      }
-    } catch (e) {
-      if (e.status !== 404) {
-        core.warning(`检查 base 文件失败: ${e.message}`);
-      }
-    }
-
-    if (fileExistsInMain) {
-      core.info(`检测到修改/删除操作（已有 ${file.filename}），需要域名所有权验证`);
-
-      if (!originalUrl) {
-        core.warning('无法读取原始文件 URL，跳过域名验证');
-      } else {
-        let hostname = null;
-        try { hostname = new URL(originalUrl).hostname; } catch {}
-
-        if (!hostname) {
-          core.warning('无法解析原始 URL 的 hostname，跳过域名验证');
-        } else {
-          const verificationCode = `moara-friends=${pull_number}`;
-          let verified = false;
-          let verifiedMethod = null;
-
-          const dnsResult = await verifyDnsTxt(hostname, verificationCode);
-          if (dnsResult) {
-            verified = true;
-            verifiedMethod = `DNS TXT (${dnsResult})`;
-          }
-
-          if (!verified) {
-            const fileResult = await verifyFile(hostname, verificationCode);
-            if (fileResult) {
-              verified = true;
-              verifiedMethod = `文件验证 (${fileResult})`;
-            }
-          }
-
-          if (verified) {
-            core.info(`✓ 域名所有权验证通过: ${verifiedMethod}`);
-          } else {
-            await fail('域名所有权验证失败', [
-              '你正在修改/删除现有的友链数据。为了防止恶意改动，请完成域名所有权验证（以下两种方式任选其一）：',
-              '',
-              '**方式 A：DNS TXT 记录**',
-              `在域名 \`${hostname}\` 或 \`_moara-friends.${hostname}\` 下添加 DNS TXT 记录`,
-              `记录内容：\`${verificationCode}\``,
-              '',
-              '**方式 B：文件验证**',
-              `在 \`${hostname}\` 网站根目录上传文件 \`.moara-friends-verify.txt\``,
-              `文件内容：\`${verificationCode}\``,
-              '',
-              `原始文件 URL：\`${originalUrl}\``,
-            ]);
-            return;
-          }
-        }
-      }
-    }
-
-    // ── 6. URL + avatar 可达性检查 ──
+    // ── 6. URL + avatar 可达性检查───
     core.info('🌐 正在并行检查站点 URL 和头像 URL 可达性...');
 
     const tasks = [
@@ -856,7 +860,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
       return;
     }
 
-    // ── 7. 回链验证 ──
+    // ── 7. 回链验证 ───
     core.info(`🔗 正在抓取友链页面检查回链：${data.backlink}`);
 
     const pageRes = await fetchPage(data.backlink);
@@ -911,7 +915,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
     core.info(`✓ 回链验证通过：找到匹配链接 ${backlinkResult.matchedHref}${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`);
   }
 
-  // ── 8. 自动合并 ──
+  // ── 8. 自动合并 ───
   core.info('✅ 所有校验通过，执行自动合并');
 
   try {

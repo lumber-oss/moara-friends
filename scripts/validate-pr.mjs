@@ -2,6 +2,7 @@
 // 两种方式（任一通过即可）：
 //   A. DNS TXT 记录：hostname 或 _moara-friends.hostname 的 TXT 记录包含验证码
 //   B. 文件验证：https://hostname/.moara-friends-verify.txt 内容包含验证码
+//      （https 失败后 fallback 到 http，兼容无 SSL 的免费托管）
 
 async function verifyDnsTxt(hostname, expectedCode) {
   const dns = (await import('node:dns')).promises;
@@ -588,6 +589,7 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
   // 支持两种验证方式（任一通过即可）：
   //   A. DNS TXT 记录：hostname 或 _moara-friends.hostname 的 TXT 记录
   //   B. 文件验证：https://hostname/.moara-friends-verify.txt 内容包含验证码
+//      （https 失败后 fallback 到 http，兼容无 SSL 的免费托管）
   let fileExistsInMain = false;
   let originalUrl = null;
   try {

@@ -16,7 +16,7 @@ async function verifyDnsTxt(hostname, expectedCode) {
 
 async function verifyFile(hostname, expectedCode) {
   const initialCheck = isPublicUrl(`https://${hostname}/`);
-  if (!initialCheck.ok) return null;
+  if (!initialCheck.ok) return { error: `SSRF 拦截：${initialCheck.reason}` };
 
   for (const proto of ['https', 'http']) {
     let currentUrl = `${proto}://${hostname}/.moara-friends-verify.txt`;
@@ -39,7 +39,7 @@ async function verifyFile(hostname, expectedCode) {
           if (!location) break;
           const nextUrl = new URL(location, currentUrl).href;
           const ssrfCheck = isPublicUrl(nextUrl);
-          if (!ssrfCheck.ok) break;
+          if (!ssrfCheck.ok) return { error: `SSRF 拦截：重定向到 ${nextUrl}（${ssrfCheck.reason}）` };
           currentUrl = nextUrl;
           hops++;
           continue;
@@ -48,7 +48,7 @@ async function verifyFile(hostname, expectedCode) {
         if (res.status >= 200 && res.status < 400) {
           const text = await res.text();
           if (text.includes(expectedCode)) {
-            return currentUrl;
+            return { url: currentUrl };
           }
         }
         break;
@@ -641,9 +641,19 @@ export async function runValidation({ owner, repo, pull_number, prHead, prAuthor
         // B：文件验证
         if (!verified) {
           const fileResult = await verifyFile(hostname, verificationCode);
-          if (fileResult) {
+          if (fileResult && fileResult.error) {
+            await fail('文件验证：SSRF 拦截', [
+              `在验证 \`${hostname}\` 域名所有权时触发安全防护：`,
+              '',
+              fileResult.error,
+              '',
+              '该域名的 URL 可能指向内部网络或被重定向到不安全地址',
+            ]);
+            return;
+          }
+          if (fileResult && fileResult.url) {
             verified = true;
-            verifiedMethod = `文件验证 (${fileResult})`;
+            verifiedMethod = `文件验证 (${fileResult.url})`;
           }
         }
 

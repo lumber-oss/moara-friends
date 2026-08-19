@@ -588,7 +588,6 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   // ── 6. 去重检查 ──
   const index = await buildFriendIndex(octokit, owner, repo);
   const urlNorm = data.url.replace(/\/$/, '').toLowerCase();
-  const nameNorm = data.name.trim().toLowerCase();
 
   if (index.byUrl[urlNorm]) {
     await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
@@ -604,21 +603,6 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'url_exists' };
-  }
-  if (index.byName[nameNorm]) {
-    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
-      '站点名称已存在',
-      [
-        `你的站点名称：\`${data.name}\``,
-        `已存在的友链文件：\`${index.byName[nameNorm]}\``,
-        '',
-        '请换一个站点名称，或如需修改已有同名友链，请走 PR 流程。',
-      ],
-      { reprocess: forceReprocess },
-    ));
-    await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
-    await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
-    return { ok: false, reason: 'name_exists' };
   }
   if (index.byFilename[filename]) {
     await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(

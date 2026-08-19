@@ -5,5 +5,9 @@
     "avatar": "https://blog.945426.xyz/assets/img/icon/moara.webp",
     "description": "沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档",
     "vip": true
+  },
+  {
+    "name": "test2",
+    "url": "https://raw-posts.945426.xyz"
   }
 ]

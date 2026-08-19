@@ -165,9 +165,12 @@ async function addLabels(octokit, owner, repo, issue_number, labels) {
 // 返回 comment id 或 null
 async function findStatusCardComment(octokit, owner, repo, issue_number) {
   try {
-    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-      owner, repo, issue_number, per_page: 100,
-    });
+    const comments = await withRetry(
+      () => octokit.paginate(octokit.rest.issues.listComments, {
+        owner, repo, issue_number, per_page: 100,
+      }),
+      { name: 'listComments' }
+    );
     // 倒序找最近一条带 marker 的 bot 评论
     for (let i = comments.length - 1; i >= 0; i--) {
       const c = comments[i];

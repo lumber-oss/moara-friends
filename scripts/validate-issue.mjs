@@ -103,27 +103,58 @@ export function parseApplication(body = '') {
 }
 
 // ========== 工具：调用 GitHub API ==========
+// 通用重试包装：处理瞬时网络抖动（如 fetch failed）
+// 对 5xx 和网络错误重试 3 次，4xx 立即失败
+async function withRetry(fn, { name = 'api', retries = 3 } = {}) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const status = e.status || e.response?.status || 0;
+      // 4xx (除 429/408) 不重试
+      if (status >= 400 && status < 500 && status !== 408 && status !== 429) break;
+      if (i < retries - 1) {
+        const wait = 1000 * Math.pow(2, i);  // 1s, 2s, 4s
+        console.warn(`${name} 失败(${status || 'network'}): ${e.message}，${wait}ms 后重试...`);
+        await sleep(wait);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function createComment(octokit, owner, repo, issue_number, body) {
   try {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number, body });
+    await withRetry(
+      () => octokit.rest.issues.createComment({ owner, repo, issue_number, body }),
+      { name: 'createComment' }
+    );
   } catch (e) {
-    console.warn(`createComment failed: ${e.message}`);
+    console.warn(`createComment 最终失败: ${e.message}`);
   }
 }
 
 async function closeIssue(octokit, owner, repo, issue_number, state_reason = 'completed') {
   try {
-    await octokit.rest.issues.update({ owner, repo, issue_number, state: 'closed', state_reason });
+    await withRetry(
+      () => octokit.rest.issues.update({ owner, repo, issue_number, state: 'closed', state_reason }),
+      { name: 'closeIssue' }
+    );
   } catch (e) {
-    console.warn(`closeIssue failed: ${e.message}`);
+    console.warn(`closeIssue 最终失败: ${e.message}`);
   }
 }
 
 async function addLabels(octokit, owner, repo, issue_number, labels) {
   try {
-    await octokit.rest.issues.addLabels({ owner, repo, issue_number, labels });
+    await withRetry(
+      () => octokit.rest.issues.addLabels({ owner, repo, issue_number, labels }),
+      { name: 'addLabels' }
+    );
   } catch (e) {
-    console.warn(`addLabels failed: ${e.message}`);
+    console.warn(`addLabels 最终失败: ${e.message}`);
   }
 }
 

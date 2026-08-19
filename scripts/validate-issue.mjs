@@ -53,6 +53,9 @@ const ISSUE_TITLE_PREFIX = '[Friend Link]';
 const MARKER_INITIAL = '<!-- moara-friends-bot:initial -->';
 const MARKER_ACCEPTED = '<!-- moara-friends-bot:accepted -->';
 const MARKER_REJECTED = '<!-- moara-friends-bot:rejected -->';
+// 状态卡片 marker：用于查找本 Issue 中 bot 的「主评论」
+// 后续状态更新会编辑这条评论（编辑评论不会触发邮件通知）
+const MARKER_STATUS_CARD = '<!-- moara-friends-bot:status-card -->';
 
 // 冷却等待（毫秒）。0 = 不等待。
 // 预留位置：如果未来发现用户提交 Issue 后回链还没生效（CDN 缓存慢），
@@ -156,6 +159,82 @@ async function addLabels(octokit, owner, repo, issue_number, labels) {
   } catch (e) {
     console.warn(`addLabels 最终失败: ${e.message}`);
   }
+}
+
+// 查找本 Issue 中 bot 发的「状态卡片」主评论（带 MARKER_STATUS_CARD）
+// 返回 comment id 或 null
+async function findStatusCardComment(octokit, owner, repo, issue_number) {
+  try {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner, repo, issue_number, per_page: 100,
+    });
+    // 倒序找最近一条带 marker 的 bot 评论
+    for (let i = comments.length - 1; i >= 0; i--) {
+      const c = comments[i];
+      if (c.user?.login === 'github-actions[bot]' || c.user?.type === 'Bot') {
+        if (c.body && c.body.includes(MARKER_STATUS_CARD)) {
+          return c.id;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`findStatusCardComment failed: ${e.message}`);
+  }
+  return null;
+}
+
+// 创建或更新「状态卡片」主评论
+// - 首次（找不到主评论）：创建（会触发邮件通知）
+// - 后续（找到主评论）：编辑同一条评论（不触发邮件通知）
+async function upsertStatusComment(octokit, owner, repo, issue_number, body) {
+  const commentId = await findStatusCardComment(octokit, owner, repo, issue_number);
+  if (commentId) {
+    // 编辑已有评论（不触发邮件）
+    try {
+      await withRetry(
+        () => octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body }),
+        { name: 'updateComment' }
+      );
+      return { action: 'updated', commentId };
+    } catch (e) {
+      console.warn(`updateComment 失败（fallback 到 create）：${e.message}`);
+    }
+  }
+  // 创建新评论（触发邮件）
+  try {
+    await withRetry(
+      () => octokit.rest.issues.createComment({ owner, repo, issue_number, body }),
+      { name: 'createComment' }
+    );
+    return { action: 'created' };
+  } catch (e) {
+    console.warn(`createComment 最终失败: ${e.message}`);
+    return { action: 'failed', error: e.message };
+  }
+}
+
+// 权限校验：检查用户是否有权触发 /recheck
+// 允许：Issue 创建者 + 仓库 owner/admin
+async function checkRecheckPermission(octokit, owner, repo, username, issueAuthor) {
+  // 1. Issue 创建者直接通过
+  if (username === issueAuthor) {
+    return { allowed: true, reason: 'issue_author' };
+  }
+
+  // 2. 检查仓库 collaborator 权限（owner/admin/write 都允许）
+  try {
+    const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+      owner, repo, username,
+    });
+    // permission: "admin" | "write" | "read" | "none"
+    if (data.permission === 'admin' || data.permission === 'write') {
+      return { allowed: true, reason: `repo_${data.permission}` };
+    }
+  } catch (e) {
+    console.warn(`getCollaboratorPermissionLevel failed: ${e.message}`);
+  }
+
+  return { allowed: false, reason: 'not_authorized' };
 }
 
 async function ensureLabel(octokit, owner, repo, name, color) {
@@ -267,53 +346,99 @@ async function commitAndPushFriendFile({ filename, content, targetBranch, worksp
   return { pushed: true, sha };
 }
 
-// ========== 失败评论构造 ==========
-function buildFailBody(title, lines) {
-  return [
-    `## ❌ ${title}`,
+// ========== 评论构造 ==========
+// 统一的状态卡片格式：所有 bot 状态更新走同一条评论
+// 首次 create（发邮件），后续 update（不发邮件）
+
+function buildStatusCard({ phase, title, body, marker, reprocess = false }) {
+  // phase: 'pending' | 'success' | 'fail'
+  // marker: '' | MARKER_ACCEPTED | MARKER_REJECTED
+  const phaseIcon = phase === 'success' ? '✅' : phase === 'fail' ? '❌' : '🔄';
+  const lines = [
+    `${MARKER_STATUS_CARD}`,
+    `## ${phaseIcon} ${title}${reprocess ? '（重新校验）' : ''}`,
     '',
-    ...lines.map((l) => {
-      if (l === '') return '';
-      if (l.startsWith('```') || l.startsWith('    ')) return l;
-      if (/^\s*([-*+]|\d+\.)\s/.test(l)) return l;
-      return `- ${l}`;
-    }),
-    '',
-    '---',
-    '',
-    '<details>',
-    '<summary><b>🔄 重新校验</b></summary>',
-    '',
-    '修复上述问题后，任选一种方式触发重新校验：',
-    '',
-    '1. **重新打开此 Issue** —— 直接点下方「Reopen」按钮，bot 会自动重新校验',
-    '2. **在本 Issue 评论 `/recheck`** —— bot 会自动重新校验',
-    '',
-    '> 修改 Issue 正文（编辑上方描述）后，再触发重新校验即可，无需新建 Issue。',
-    '',
-    '</details>',
-    '',
-    `如对审核结果有疑问，可[联系 moara](mailto:moara@foxmail.com)。`,
-  ].join('\n');
+  ];
+  if (body) lines.push(body);
+  if (marker) lines.push(marker);
+  return lines.join('\n');
 }
 
-function buildSuccessBody({ filename, sha, usedPlaywright }) {
-  return [
-    `## ✅ 友链申请已通过`,
-    '',
-    `已自动写入 \`${filename}\`，commit \`${sha ? sha.slice(0, 7) : 'unknown'}\`。`,
-    '',
-    `**校验结果**：`,
-    `- 字段格式 ✓`,
-    `- SSRF 防护 ✓`,
-    `- 回链域名一致性 ✓`,
-    `- URL 与头像可达性 ✓`,
-    `- 回链验证 ✓${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`,
-    '',
-    '稍后 build workflow 会重建 `friends.json`，CDN 缓存刷新后即可在本站友链页看到。',
-    '',
-    '如需修改或删除，请走 PR 流程并完成域名所有权验证（详见 README）。',
-  ].join('\n');
+// pending 状态（处理中）
+function buildPendingBody({ reprocess = false } = {}) {
+  return buildStatusCard({
+    phase: 'pending',
+    title: '友链申请处理中',
+    body: [
+      '正在校验以下内容：',
+      '- 字段格式',
+      '- SSRF 防护',
+      '- 回链域名一致性',
+      '- URL 与头像可达性',
+      '- 回链验证（你的友链页是否已添加本站链接）',
+      '',
+      '校验通常在 1-2 分钟内完成，请稍候。',
+    ].join('\n'),
+    reprocess,
+  });
+}
+
+// success 状态
+function buildSuccessBody({ filename, sha, usedPlaywright, reprocess = false }) {
+  return buildStatusCard({
+    phase: 'success',
+    title: '友链申请已通过',
+    body: [
+      `已自动写入 \`${filename}\`，commit \`${sha ? sha.slice(0, 7) : 'unknown'}\`。`,
+      '',
+      `**校验结果**：`,
+      `- 字段格式 ✓`,
+      `- SSRF 防护 ✓`,
+      `- 回链域名一致性 ✓`,
+      `- URL 与头像可达性 ✓`,
+      `- 回链验证 ✓${usedPlaywright ? '（Playwright 渲染）' : '（静态 HTML）'}`,
+      '',
+      '稍后 build workflow 会重建 `friends.json`，CDN 缓存刷新后即可在本站友链页看到。',
+      '',
+      '如需修改或删除，请走 PR 流程并完成域名所有权验证（详见 README）。',
+    ].join('\n'),
+    marker: MARKER_ACCEPTED,
+    reprocess,
+  });
+}
+
+// fail 状态
+function buildFailBody(title, lines, { reprocess = false } = {}) {
+  return buildStatusCard({
+    phase: 'fail',
+    title,
+    body: [
+      ...lines.map((l) => {
+        if (l === '') return '';
+        if (l.startsWith('```') || l.startsWith('    ')) return l;
+        if (/^\s*([-*+]|\d+\.)\s/.test(l)) return l;
+        return `- ${l}`;
+      }),
+      '',
+      '---',
+      '',
+      '<details>',
+      '<summary><b>🔄 重新校验</b></summary>',
+      '',
+      '修复上述问题后，任选一种方式触发重新校验（**仅 Issue 创建者和管理员可触发**）：',
+      '',
+      '1. **重新打开此 Issue** —— 直接点下方「Reopen」按钮，bot 会自动重新校验',
+      '2. **在本 Issue 评论 `/recheck`** —— bot 会自动重新校验',
+      '',
+      '> 修改 Issue 正文（编辑上方描述）后，再触发重新校验即可，无需新建 Issue。',
+      '',
+      '</details>',
+      '',
+      `如对审核结果有疑问，可[联系 moara](mailto:moara@foxmail.com)。`,
+    ].join('\n'),
+    marker: MARKER_REJECTED,
+    reprocess,
+  });
 }
 
 // ========== 单个 Issue 处理流程 ==========
@@ -355,20 +480,9 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
     return { skipped: true };
   }
 
-  // ── 0. 发布初始确认评论 ──
-  await createComment(octokit, owner, repo, issue_number, [
-    `${MARKER_INITIAL}`,
-    `## 📨 已收到友链申请${forceReprocess ? '（重新校验）' : ''}`,
-    '',
-    '正在校验以下内容：',
-    '- 字段格式',
-    '- SSRF 防护',
-    '- 回链域名一致性',
-    '- URL 与头像可达性',
-    '- 回链验证（你的友链页是否已添加本站链接）',
-    '',
-    '校验通常在 1-2 分钟内完成，请稍候。',
-  ].join('\n'));
+  // ── 0. 发布初始确认评论（首次创建会发邮件，后续 recheck 时编辑同一条评论不发邮件）──
+  await upsertStatusComment(octokit, owner, repo, issue_number,
+    buildPendingBody({ reprocess: forceReprocess }));
 
   // ── 1. 解析 Issue body ──
   const app = parseApplication(issue.body || '');
@@ -381,7 +495,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   if (!app.friendPageUrl) missingFields.push('Friend Page URL');
   if (!app.filename) missingFields.push('Filename');
   if (missingFields.length) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       'Issue 内容不完整',
       [
         `缺少必要字段：${missingFields.join(', ')}`,
@@ -389,7 +503,8 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         '请使用申请表单（apply.html 或博客 /friends 页面）生成的草稿提交，不要手工编辑 Issue 正文。',
         '完整字段包括：Site Name / Site URL / Friend Page URL / Avatar URL（可选） / Short Description（可选） / Filename。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'incomplete' };
@@ -406,10 +521,11 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
 
   const fieldResult = validateFields(data);
   if (!fieldResult.ok) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '字段校验未通过',
       fieldResult.errors,
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'field_invalid' };
@@ -418,7 +534,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   // ── 3. 文件名校验 ──
   const filenameErr = validateFilename(app.filename);
   if (filenameErr) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '文件名不符合规则',
       [
         filenameErr,
@@ -426,7 +542,8 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         '文件名只能包含英文字母、数字、短横线和下划线，可选 `.json` 后缀。',
         '示例：`example.json`、`my-blog.json`、`demo-blog`。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'filename_invalid' };
@@ -436,7 +553,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   // ── 4. SSRF 防护 ──
   const ssrfErrors = checkSsrf(data);
   if (ssrfErrors.length) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       'URL 不合法',
       [
         '检测到不可访问的地址：',
@@ -445,7 +562,8 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         '',
         '禁止使用：localhost、私有 IP、链路本地、云元数据端点等。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'ssrf' };
@@ -454,10 +572,11 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   // ── 5. 回链域名一致性 ──
   const domainErr = checkBacklinkDomainConsistency(data);
   if (domainErr) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       domainErr.title,
       domainErr.lines,
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'domain_mismatch' };
@@ -469,7 +588,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   const nameNorm = data.name.trim().toLowerCase();
 
   if (index.byUrl[urlNorm]) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '站点 URL 已存在',
       [
         `你的 URL：\`${data.url}\``,
@@ -477,13 +596,14 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         '',
         '如需修改你已有的友链信息，请走 PR 流程并完成域名所有权验证（详见 README）。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'url_exists' };
   }
   if (index.byName[nameNorm]) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '站点名称已存在',
       [
         `你的站点名称：\`${data.name}\``,
@@ -491,20 +611,22 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         '',
         '请换一个站点名称，或如需修改已有同名友链，请走 PR 流程。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'name_exists' };
   }
   if (index.byFilename[filename]) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '文件名已被占用',
       [
         `你申请的文件名：\`${filename}\``,
         '该文件名已存在，请换一个。',
         '建议用站点域名做文件名，如 `example.json`。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'filename_exists' };
@@ -536,7 +658,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
         lines.push('');
       }
     }
-    await createComment(octokit, owner, repo, issue_number, buildFailBody('可达性检查未通过', lines) + `\n${MARKER_REJECTED}`);
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody('可达性检查未通过', lines, { reprocess: forceReprocess }));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'unreachable' };
@@ -570,7 +692,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
           '2. 确保 href 是绝对链接且 URL 完全一致',
           '3. 等待 CDN 刷新后重新提交 Issue',
         ];
-    await createComment(octokit, owner, repo, issue_number, buildFailBody('回链验证未通过', lines) + `\n${MARKER_REJECTED}`);
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody('回链验证未通过', lines, { reprocess: forceReprocess }));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'backlink_not_found' };
@@ -592,14 +714,15 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
       workspace,
     });
   } catch (e) {
-    await createComment(octokit, owner, repo, issue_number, buildFailBody(
+    await upsertStatusComment(octokit, owner, repo, issue_number, buildFailBody(
       '写入文件失败',
       [
         `错误：${e.message}`,
         '',
         '校验已通过但写入仓库失败。请稍后重试，或[联系 moara](mailto:moara@foxmail.com)。',
       ],
-    ) + `\n${MARKER_REJECTED}`);
+      { reprocess: forceReprocess },
+    ));
     await closeIssue(octokit, owner, repo, issue_number, 'not_planned');
     await addLabels(octokit, owner, repo, issue_number, ['友链', '未通过']);
     return { ok: false, reason: 'push_failed', error: e.message };
@@ -612,13 +735,14 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
     log(`✅ 写入成功：${filename} @ ${pushResult.sha.slice(0, 7)}`);
   }
 
-  // ── 10. 成功评论 + 关闭 Issue + 触发 build ──
-  await createComment(octokit, owner, repo, issue_number,
+  // ── 10. 成功评论（编辑主评论）+ 关闭 Issue + 触发 build ──
+  await upsertStatusComment(octokit, owner, repo, issue_number,
     buildSuccessBody({
       filename,
       sha: pushResult.sha,
       usedPlaywright: backlinkResult.usedPlaywright,
-    }) + `\n${MARKER_ACCEPTED}`);
+      reprocess: forceReprocess,
+    }));
 
   await ensureLabel(octokit, owner, repo, '友链', '0e8a16');
   await ensureLabel(octokit, owner, repo, '已互链', '0e8a16');
@@ -693,6 +817,22 @@ export async function runIssueBot({ mode, github, core, context, env }) {
       core.info(`Issue #${issue.number} 标题不以 ${ISSUE_TITLE_PREFIX} 开头，跳过`);
       return;
     }
+
+    // 权限校验：仅 Issue 创建者 + 仓库 owner/admin 可触发 /recheck
+    const commenter = comment.user?.login;
+    const issueAuthor = issue.user?.login;
+    core.info(`权限校验: commenter=${commenter}, issueAuthor=${issueAuthor}`);
+    const perm = await checkRecheckPermission(github, owner, repo, commenter, issueAuthor);
+    if (!perm.allowed) {
+      core.warning(`用户 @${commenter} 无权触发 /recheck（reason=${perm.reason}）`);
+      await createComment(github, owner, repo, issue.number, [
+        `> @${commenter} 无权触发 \`/recheck\`。`,
+        `> 仅 Issue 创建者（@${issueAuthor || '?'}）和仓库管理员可触发重新校验。`,
+        `> 如需重新校验，请让 Issue 创建者操作，或[联系 moara](mailto:moara@foxmail.com)。`,
+      ].join('\n'));
+      return;
+    }
+    core.info(`✓ 权限通过: @${commenter} (${perm.reason})`);
 
     // 如果 Issue 处于关闭状态，先重新打开（这样 processIssue 才会真正执行）
     // 但如果 Issue 已 accepted，processIssue 内部会直接跳过；

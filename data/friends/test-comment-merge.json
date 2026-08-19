@@ -1,5 +1,0 @@
-{
-  "name": "评论合并测试-已修复",
-  "url": "https://raw-posts.945426.xyz/link",
-  "description": "修改 body 后用 /recheck 重试，看评论是否被编辑而非新建"
-}

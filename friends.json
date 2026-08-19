@@ -10,5 +10,10 @@
     "name": "测试-JS渲染",
     "url": "https://raw-posts.945426.xyz",
     "description": "需要执行 JS 才能看到回链"
+  },
+  {
+    "name": "静态测试v3",
+    "url": "https://raw-posts.945426.xyz/link",
+    "description": "验证静态 HTML 回链端到端流程"
   }
 ]

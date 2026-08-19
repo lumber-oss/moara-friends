@@ -5,5 +5,10 @@
     "avatar": "https://blog.945426.xyz/assets/img/icon/moara.webp",
     "description": "沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档",
     "vip": true
+  },
+  {
+    "name": "重新校验测试-已修复",
+    "url": "https://raw-posts.945426.xyz/link",
+    "description": "修改后回链通过，测试重新打开 Issue 触发重校验"
   }
 ]

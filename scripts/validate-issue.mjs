@@ -752,10 +752,30 @@ export async function runIssueBot({ mode, github, core, context, env }) {
       core.warning('未找到 issue payload');
       return;
     }
-    await processIssue({
+    const result = await processIssue({
       octokit: github, owner, repo, issue, workspace, targetBranch, core,
       forceReprocess: mode === 'reopened',
     });
+
+    // 处理 processIssue 跳过的情况（已 accepted）
+    // 用户可能重新打开一个已通过的 Issue 想再次校验，此时应：
+    // 1. close 回去（保持 completed 状态）
+    // 2. 评论提示「无需重新校验」
+    if (mode === 'reopened' && result?.skipped && result?.reason === 'already_accepted') {
+      core.info(`Issue #${issue.number} 已 accepted（reopened），关闭为 completed 并提示`);
+      try {
+        await github.rest.issues.update({
+          owner, repo, issue_number: issue.number,
+          state: 'closed', state_reason: 'completed',
+        });
+      } catch (e) {
+        core.warning(`关闭 Issue 失败: ${e.message}`);
+      }
+      await createComment(github, owner, repo, issue.number, [
+        `> 此 Issue 已通过校验（友链已写入仓库），无需重新校验。`,
+        `> 如需修改友链信息，请走 PR 流程并完成域名所有权验证。`,
+      ].join('\n'));
+    }
     return;
   }
 
@@ -819,20 +839,28 @@ export async function runIssueBot({ mode, github, core, context, env }) {
       forceReprocess: true,
     });
 
-    // 如果 processIssue 跳过（已 accepted）且我们刚 reopen 过，把它 close 回去
-    // 避免给用户留下「Issue 还开着」的错觉
-    if (reopenedByUs && result?.skipped && result?.reason === 'already_accepted') {
-      core.info(`Issue #${issue.number} 已 accepted，重新关闭以保持 completed 状态`);
-      try {
-        await github.rest.issues.update({
-          owner, repo, issue_number: issue.number,
-          state: 'closed', state_reason: 'completed',
-        });
-      } catch (e) {
-        core.warning(`重新关闭 Issue 失败: ${e.message}`);
+    // 处理 processIssue 跳过的情况（已 accepted）
+    // 不管是不是我们 reopen 的，只要被跳过且原因是 already_accepted：
+    // 1. 如果 Issue 当前是 open 状态 → close 回去（保持 completed）
+    // 2. 评论一条提示「无需重新校验」
+    // 这样用户评论 /recheck 后能看到明确反馈，而不是「无反应」
+    if (result?.skipped && result?.reason === 'already_accepted') {
+      core.info(`Issue #${issue.number} 已 accepted，处理跳过逻辑`);
+
+      // 1. 如果当前是 open，close 回去
+      if (issue.state === 'open' || reopenedByUs) {
+        core.info(`Issue #${issue.number} 当前是 open 状态，关闭为 completed`);
+        try {
+          await github.rest.issues.update({
+            owner, repo, issue_number: issue.number,
+            state: 'closed', state_reason: 'completed',
+          });
+        } catch (e) {
+          core.warning(`关闭 Issue 失败: ${e.message}`);
+        }
       }
 
-      // 评论一条简短提示，避免用户以为没生效
+      // 2. 评论提示
       await createComment(github, owner, repo, issue.number, [
         `> 此 Issue 已通过校验（友链已写入仓库），无需重新校验。`,
         `> 如需修改友链信息，请走 PR 流程并完成域名所有权验证。`,

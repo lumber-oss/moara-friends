@@ -7,6 +7,11 @@
     "vip": true
   },
   {
+    "name": "同URL测试",
+    "url": "https://raw-posts.945426.xyz/link",
+    "description": "URL 与 #n1 相同，应通过（URL 检查已删除）"
+  },
+  {
     "name": "正常申请v4",
     "url": "https://raw-posts.945426.xyz/link",
     "description": "全新 URL + 全新文件名，应通过"

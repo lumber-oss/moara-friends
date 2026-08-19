@@ -20,6 +20,11 @@ concurrency:
 
 jobs:
   build:
+    # 只在上游仓库运行，fork 仓库不运行
+    # 原因：build.yml 会自动 commit friends.json 回 main 分支
+    # 如果 fork 也运行，fork main 会带上 friends.json，导致用户提 PR 到上游时
+    # PR diff 包含 friends.json，被 PR 校验「只能包含一个文件变更」拒绝
+    if: github.repository == 'moaradc/moara-friends'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

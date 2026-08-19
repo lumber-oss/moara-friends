@@ -46,14 +46,15 @@ concurrency:
 
 jobs:
   process:
-    # 过滤条件：
-    # - issues 事件：标题以 [Friend Link] 开头
-    # - issue_comment 事件：标题以 [Friend Link] 开头 且 评论以 /recheck 开头
-    # - workflow_dispatch：不过滤
+    # 只在上游仓库运行，fork 仓库不运行
+    # 原因：issue-bot 会 git push data/friends/*.json 到 main 分支
+    # fork 仓库即使触发也没意义（Issue 申请的是 fork 自己的友链，不是上游的）
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && startsWith(github.event.issue.title, '[Friend Link]')) ||
-      (github.event_name == 'issue_comment' && startsWith(github.event.issue.title, '[Friend Link]') && startsWith(github.event.comment.body, '/recheck'))
+      github.repository == 'moaradc/moara-friends' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'issues' && startsWith(github.event.issue.title, '[Friend Link]')) ||
+        (github.event_name == 'issue_comment' && startsWith(github.event.issue.title, '[Friend Link]') && startsWith(github.event.comment.body, '/recheck'))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

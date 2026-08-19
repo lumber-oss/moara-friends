@@ -18,6 +18,9 @@ concurrency:
 
 jobs:
   triage:
+    # 只在上游仓库运行
+    # pull_request_target 本身就只在上游触发，但加这个条件更明确
+    if: github.repository == 'moaradc/moara-friends'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

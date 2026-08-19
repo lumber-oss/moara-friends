@@ -280,7 +280,19 @@ function buildFailBody(title, lines) {
     }),
     '',
     '---',
-    '请按提示修改后**重新提交一个新 Issue**（本 Issue 会被自动关闭）。',
+    '',
+    '<details>',
+    '<summary><b>🔄 重新校验</b></summary>',
+    '',
+    '修复上述问题后，任选一种方式触发重新校验：',
+    '',
+    '1. **重新打开此 Issue** —— 直接点下方「Reopen」按钮，bot 会自动重新校验',
+    '2. **在本 Issue 评论 `/recheck`** —— bot 会自动重新校验',
+    '',
+    '> 修改 Issue 正文（编辑上方描述）后，再触发重新校验即可，无需新建 Issue。',
+    '',
+    '</details>',
+    '',
     `如对审核结果有疑问，可[联系 moara](mailto:moara@foxmail.com)。`,
   ].join('\n');
 }
@@ -305,22 +317,33 @@ function buildSuccessBody({ filename, sha, usedPlaywright }) {
 }
 
 // ========== 单个 Issue 处理流程 ==========
-async function processIssue({ octokit, owner, repo, issue, workspace, targetBranch, core }) {
+async function processIssue({ octokit, owner, repo, issue, workspace, targetBranch, core, forceReprocess = false }) {
   const issue_number = issue.number;
   const log = (msg) => core?.info?.(msg) ?? console.log(msg);
 
-  log(`\n========== 处理 Issue #${issue_number}: ${issue.title} ==========`);
+  log(`\n========== 处理 Issue #${issue_number}: ${issue.title}${forceReprocess ? ' (强制重新校验)' : ''} ==========`);
 
-  // 幂等检查：如果已处理过，跳过
-  // （事件可能重复投递）
+  // 幂等检查：
+  // - forceReprocess=true（reopened/recheck 触发）：只跳过已 accepted 的，允许重新处理 rejected 的
+  // - forceReprocess=false（opened/review 触发）：accepted 和 rejected 都跳过
   try {
     const comments = await octokit.paginate(octokit.rest.issues.listComments, {
       owner, repo, issue_number, per_page: 100,
     });
     const allBodies = comments.map(c => c.body || '').join('\n');
-    if (allBodies.includes(MARKER_ACCEPTED) || allBodies.includes(MARKER_REJECTED)) {
-      log(`⏭️  Issue #${issue_number} 已处理过（marker 命中），跳过`);
-      return { skipped: true };
+    const hasAccepted = allBodies.includes(MARKER_ACCEPTED);
+    const hasRejected = allBodies.includes(MARKER_REJECTED);
+
+    if (hasAccepted) {
+      log(`⏭️  Issue #${issue_number} 已通过（accepted），跳过`);
+      return { skipped: true, reason: 'already_accepted' };
+    }
+    if (hasRejected && !forceReprocess) {
+      log(`⏭️  Issue #${issue_number} 之前被拒（rejected），跳过；如需重试请重新打开 Issue 或评论 /recheck`);
+      return { skipped: true, reason: 'already_rejected' };
+    }
+    if (hasRejected && forceReprocess) {
+      log(`🔄 Issue #${issue_number} 之前被拒，现在重新校验`);
     }
   } catch (e) {
     core?.warning?.(`检查已有评论失败: ${e.message}`);
@@ -335,7 +358,7 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
   // ── 0. 发布初始确认评论 ──
   await createComment(octokit, owner, repo, issue_number, [
     `${MARKER_INITIAL}`,
-    `## 📨 已收到友链申请`,
+    `## 📨 已收到友链申请${forceReprocess ? '（重新校验）' : ''}`,
     '',
     '正在校验以下内容：',
     '- 字段格式',
@@ -634,14 +657,60 @@ export async function runIssueBot({ mode, github, core, context, env }) {
     await sleep(COOLDOWN_MS);
   }
 
-  if (mode === 'opened') {
-    // 处理刚提交的 Issue
+  if (mode === 'opened' || mode === 'reopened') {
+    // 处理刚打开或重新打开的 Issue
+    // reopened 视为重新校验：forceReprocess=true，允许重试已 rejected 的
     const issue = context.payload.issue;
     if (!issue) {
       core.warning('未找到 issue payload');
       return;
     }
-    await processIssue({ octokit: github, owner, repo, issue, workspace, targetBranch, core });
+    await processIssue({
+      octokit: github, owner, repo, issue, workspace, targetBranch, core,
+      forceReprocess: mode === 'reopened',
+    });
+    return;
+  }
+
+  if (mode === 'recheck') {
+    // 处理 issue_comment 事件中的 /recheck 斜杠命令
+    const comment = context.payload.comment;
+    const issue = context.payload.issue;
+    if (!comment || !issue) {
+      core.warning('未找到 comment 或 issue payload');
+      return;
+    }
+
+    // 二次校验评论内容（防止 workflow_dispatch 误触发）
+    const body = (comment.body || '').trim();
+    if (!body.startsWith('/recheck')) {
+      core.info(`评论内容不是 /recheck 命令，跳过：${body.slice(0, 50)}`);
+      return;
+    }
+
+    // 标题前缀检查
+    if (!issue.title || !issue.title.startsWith(ISSUE_TITLE_PREFIX)) {
+      core.info(`Issue #${issue.number} 标题不以 ${ISSUE_TITLE_PREFIX} 开头，跳过`);
+      return;
+    }
+
+    // 如果 Issue 处于关闭状态，先重新打开
+    if (issue.state === 'closed') {
+      core.info(`Issue #${issue.number} 处于关闭状态，重新打开以进行校验`);
+      try {
+        await github.rest.issues.update({
+          owner, repo, issue_number: issue.number, state: 'open',
+        });
+      } catch (e) {
+        core.warning(`重新打开 Issue 失败: ${e.message}`);
+      }
+    }
+
+    // 触发处理（强制重新校验）
+    await processIssue({
+      octokit: github, owner, repo, issue, workspace, targetBranch, core,
+      forceReprocess: true,
+    });
     return;
   }
 

@@ -694,23 +694,47 @@ export async function runIssueBot({ mode, github, core, context, env }) {
       return;
     }
 
-    // 如果 Issue 处于关闭状态，先重新打开
+    // 如果 Issue 处于关闭状态，先重新打开（这样 processIssue 才会真正执行）
+    // 但如果 Issue 已 accepted，processIssue 内部会直接跳过；
+    // 此时若我们已 reopen，需要把它 close 回去以保持 completed 状态
+    let reopenedByUs = false;
     if (issue.state === 'closed') {
       core.info(`Issue #${issue.number} 处于关闭状态，重新打开以进行校验`);
       try {
         await github.rest.issues.update({
           owner, repo, issue_number: issue.number, state: 'open',
         });
+        reopenedByUs = true;
       } catch (e) {
         core.warning(`重新打开 Issue 失败: ${e.message}`);
       }
     }
 
     // 触发处理（强制重新校验）
-    await processIssue({
+    const result = await processIssue({
       octokit: github, owner, repo, issue, workspace, targetBranch, core,
       forceReprocess: true,
     });
+
+    // 如果 processIssue 跳过（已 accepted）且我们刚 reopen 过，把它 close 回去
+    // 避免给用户留下「Issue 还开着」的错觉
+    if (reopenedByUs && result?.skipped && result?.reason === 'already_accepted') {
+      core.info(`Issue #${issue.number} 已 accepted，重新关闭以保持 completed 状态`);
+      try {
+        await github.rest.issues.update({
+          owner, repo, issue_number: issue.number,
+          state: 'closed', state_reason: 'completed',
+        });
+      } catch (e) {
+        core.warning(`重新关闭 Issue 失败: ${e.message}`);
+      }
+
+      // 评论一条简短提示，避免用户以为没生效
+      await createComment(github, owner, repo, issue.number, [
+        `> 此 Issue 已通过校验（友链已写入仓库），无需重新校验。`,
+        `> 如需修改友链信息，请走 PR 流程并完成域名所有权验证。`,
+      ].join('\n'));
+    }
     return;
   }
 

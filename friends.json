@@ -5,10 +5,5 @@
     "avatar": "https://blog.945426.xyz/assets/img/icon/moara.webp",
     "description": "沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档",
     "vip": true
-  },
-  {
-    "name": "评论合并测试-已修复",
-    "url": "https://raw-posts.945426.xyz/link",
-    "description": "修改 body 后用 /recheck 重试，看评论是否被编辑而非新建"
   }
 ]

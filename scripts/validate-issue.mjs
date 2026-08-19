@@ -272,29 +272,47 @@ async function listExistingFriends(octokit, owner, repo) {
   return friends;
 }
 
-// 读取 data/friends 下所有 JSON 内容，建立 {name, url} → filename 的反向索引
+// 建立去重索引（仅 2 次 API 调用，与友链数量无关）：
+// - byFilename：列 data/friends/ 目录拿所有 .json 文件名（不读文件内容）
+// - byUrl：读仓库根目录的 friends.json 聚合文件，从中提取所有友链的 url
+//
+// friends.json 是 build.js 在每次合并/写入后自动重建的产物，
+// 包含所有友链的 name/url/avatar/description（不含文件名，不含 backlink）。
+// 用它做 URL 去重，不需要再逐个读 data/friends/*.json 文件。
 async function buildFriendIndex(octokit, owner, repo) {
-  const index = { byUrl: {}, byName: {}, byFilename: {} };
-  try {
-    const res = await octokit.rest.repos.getContent({ owner, repo, path: 'data/friends' });
-    if (!Array.isArray(res.data)) return index;
+  const index = { byUrl: {}, byFilename: {} };
 
-    for (const item of res.data) {
-      if (item.type !== 'file' || !item.name.endsWith('.json')) continue;
-      try {
-        const fileRes = await octokit.rest.repos.getContent({ owner, repo, path: item.path });
-        if (fileRes.data && fileRes.data.content) {
-          const raw = Buffer.from(fileRes.data.content, fileRes.data.encoding || 'base64').toString('utf-8');
-          const parsed = JSON.parse(raw);
-          const urlNorm = parsed.url ? parsed.url.replace(/\/$/, '').toLowerCase() : '';
-          if (urlNorm) index.byUrl[urlNorm] = item.name;
-          if (parsed.name) index.byName[parsed.name.trim().toLowerCase()] = item.name;
+  // 1. 列 data/friends/ 目录拿文件名（不读内容）
+  try {
+    const dirRes = await octokit.rest.repos.getContent({ owner, repo, path: 'data/friends' });
+    if (Array.isArray(dirRes.data)) {
+      for (const item of dirRes.data) {
+        if (item.type === 'file' && item.name.endsWith('.json')) {
           index.byFilename[item.name] = true;
         }
-      } catch {}
+      }
     }
   } catch (e) {
-    console.warn(`buildFriendIndex failed: ${e.message}`);
+    console.warn(`buildFriendIndex: list data/friends/ failed: ${e.message}`);
+  }
+
+  // 2. 读 friends.json（聚合文件）拿 url 列表
+  try {
+    const fileRes = await octokit.rest.repos.getContent({ owner, repo, path: 'friends.json' });
+    if (fileRes.data && fileRes.data.content) {
+      const raw = Buffer.from(fileRes.data.content, fileRes.data.encoding || 'base64').toString('utf-8');
+      const friends = JSON.parse(raw);
+      if (Array.isArray(friends)) {
+        for (const f of friends) {
+          if (f.url) {
+            const urlNorm = f.url.replace(/\/$/, '').toLowerCase();
+            if (urlNorm) index.byUrl[urlNorm] = true;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`buildFriendIndex: read friends.json failed: ${e.message}`);
   }
   return index;
 }
@@ -594,9 +612,8 @@ async function processIssue({ octokit, owner, repo, issue, workspace, targetBran
       '站点 URL 已存在',
       [
         `你的 URL：\`${data.url}\``,
-        `已存在的友链文件：\`${index.byUrl[urlNorm]}\``,
         '',
-        '如需修改你已有的友链信息，请走 PR 流程并完成域名所有权验证（详见 README）。',
+        '该 URL 已被收录。如需修改你已有的友链信息，请走 PR 流程并完成域名所有权验证（详见 README）。',
       ],
       { reprocess: forceReprocess },
     ));

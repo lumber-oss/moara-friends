@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>申请友链 - 沫然Blog</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --border: #e1e4e8;
+    --text: #1f2328;
+    --muted: #656d76;
+    --primary: #2f81f7;
+    --primary-hover: #1f6feb;
+    --success: #1a7f37;
+    --danger: #cf222e;
+    --warning: #9a6700;
+    --warning-bg: #fff8c5;
+    --code-bg: #f6f8fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --primary: #2f81f7;
+      --primary-hover: #58a6ff;
+      --success: #3fb950;
+      --danger: #f85149;
+      --warning: #d29922;
+      --warning-bg: #2a2305;
+      --code-bg: #161b22;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 24px 16px 80px;
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 760px; margin: 0 auto; }
+  header {
+    text-align: center;
+    margin-bottom: 32px;
+  }
+  header h1 {
+    font-size: 28px;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  header p {
+    color: var(--muted);
+    margin: 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 17px;
+    margin: 0 0 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card h2 .num {
+    background: var(--primary);
+    color: white;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .card p { margin: 8px 0; color: var(--text); }
+  .card .muted { color: var(--muted); font-size: 13px; }
+  .info-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  .info-block .label {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .info-block .value {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    word-break: break-all;
+  }
+  .info-block .value a {
+    color: var(--primary);
+    text-decoration: none;
+  }
+  .info-block .value a:hover { text-decoration: underline; }
+  .copy-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 2px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-left: 8px;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+  .form-group { margin-bottom: 16px; }
+  .form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+    font-size: 14px;
+  }
+  .form-group label .required { color: var(--danger); margin-left: 2px; }
+  .form-group input,
+  .form-group textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .form-group input:focus,
+  .form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.15);
+  }
+  .form-group .hint {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+  .form-group .error {
+    color: var(--danger);
+    font-size: 12px;
+    margin-top: 4px;
+    display: none;
+  }
+  .form-group.has-error input,
+  .form-group.has-error textarea {
+    border-color: var(--danger);
+  }
+  .form-group.has-error .error { display: block; }
+  .checkbox-group {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px;
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+    border-radius: 6px;
+    margin: 12px 0;
+  }
+  .checkbox-group input[type="checkbox"] {
+    width: auto;
+    margin-top: 3px;
+  }
+  .checkbox-group label {
+    margin: 0;
+    font-weight: 400;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .btn {
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+    text-align: center;
+  }
+  .btn-primary {
+    background: var(--primary);
+    color: white;
+  }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-primary:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .btn-secondary {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .preview-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-top: 12px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .alert {
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  .alert-info {
+    background: rgba(47, 129, 247, 0.1);
+    border: 1px solid var(--primary);
+    color: var(--primary);
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 32px;
+  }
+  footer a { color: var(--primary); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>申请友链</h1>
+      <p>填写下方表单，登录 GitHub 提交 Issue 即可，无需 Fork 仓库</p>
+    </header>
+
+    <!-- Step 1: 添加本站链接到你的友链页 -->
+    <div class="card">
+      <h2><span class="num">1</span> 先在你的友链页加上本站链接</h2>
+      <p>这一步<strong>必须先做</strong>。提交后会自动抓取你的友链页检查是否已添加本站链接。</p>
+      <div class="info-block">
+        <div class="label">本站信息</div>
+        <div class="value">
+          <div>名称：沫然Blog <button class="copy-btn" data-copy="沫然Blog">复制</button></div>
+          <div>链接：<a href="https://blog.945426.xyz" target="_blank">https://blog.945426.xyz</a> <button class="copy-btn" data-copy="https://blog.945426.xyz">复制</button></div>
+          <div>头像：https://blog.945426.xyz/assets/img/icon/moara.webp <button class="copy-btn" data-copy="https://blog.945426.xyz/assets/img/icon/moara.webp">复制</button></div>
+          <div>简介：沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档 <button class="copy-btn" data-copy="沫然（moara）的个人博客 —— 技术、生活、闲谈、创作、归档">复制</button></div>
+        </div>
+      </div>
+      <p class="muted">参考 HTML（直接复制到你的友链页）：</p>
+      <div class="preview-block" id="sample-html">&lt;a href="https://blog.945426.xyz"&gt;沫然Blog&lt;/a&gt;</div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="confirm-backlink">
+        <label for="confirm-backlink">我已在友链页添加本站链接（链接地址必须为 <code>https://blog.945426.xyz</code>）</label>
+      </div>
+    </div>
+
+    <!-- Step 2: 填写站点资料 -->
+    <div class="card">
+      <h2><span class="num">2</span> 填写站点资料</h2>
+      <div class="alert alert-info">
+        💡 填写完成后会生成一个 GitHub Issue 草稿链接，点链接登录 GitHub 并提交即可。
+      </div>
+
+      <form id="friend-form" autocomplete="on">
+        <div class="form-group">
+          <label for="name">站点名称 <span class="required">*</span></label>
+          <input type="text" id="name" name="name" required maxlength="60" placeholder="如：示例博客">
+          <div class="hint">将作为友链显示名，不能与已有友链重名</div>
+          <div class="error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="url">站点 URL <span class="required">*</span></label>
+          <input type="url" id="url" name="url" required placeholder="https://example.com">
+          <div class="hint">以 http:// 或 https:// 开头；不能与已收录友链重复</div>
+          <div class="error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="friendPageUrl">你的友链页地址 <span class="required">*</span></label>
+          <input type="url" id="friendPageUrl" name="friendPageUrl" required placeholder="https://example.com/friends">
+          <div class="hint">必须和你站点 URL 同域名（即你自己的友链页，不是首页）</div>
+          <div class="error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="avatar">头像 URL</label>
+          <input type="url" id="avatar" name="avatar" placeholder="https://example.com/avatar.png">
+          <div class="hint">可选。留空时前端会用 favicon 兜底；填写时必须是可访问的图片地址</div>
+          <div class="error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="description">站点简介</label>
+          <textarea id="description" name="description" rows="2" maxlength="120" placeholder="一两句话介绍你的站点"></textarea>
+          <div class="hint">可选。最多 120 字</div>
+          <div class="error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="filename">文件名 <span class="required">*</span></label>
+          <input type="text" id="filename" name="filename" required pattern="[A-Za-z0-9_\-]+(\.json)?" placeholder="如：example 或 example.json">
+          <div class="hint">只能用英文字母、数字、短横线、下划线；可选 .json 后缀。建议用站点域名</div>
+          <div class="error"></div>
+        </div>
+      </form>
+    </div>
+
+    <!-- Step 3: 提交 Issue -->
+    <div class="card">
+      <h2><span class="num">3</span> 生成并提交 Issue</h2>
+      <p>检查下方预览内容，确认无误后点击「登录 GitHub 并提交」。</p>
+      <div class="preview-block" id="issue-preview">请先完成上方表单填写...</div>
+      <div class="actions">
+        <button class="btn btn-secondary" id="btn-copy-issue">复制 Issue 正文</button>
+        <button class="btn btn-primary" id="btn-submit" disabled>登录 GitHub 并提交</button>
+      </div>
+    </div>
+
+    <!-- 说明 -->
+    <div class="card">
+      <h2>📋 流程说明</h2>
+      <p><strong>校验项</strong>（约 1-2 分钟完成）：</p>
+      <ul>
+        <li>字段格式</li>
+        <li>SSRF 防护（拒绝内网地址）</li>
+        <li>回链域名一致性（url 和友链页必须同 host）</li>
+        <li>URL 与头像可达性</li>
+        <li>回链验证（抓取你的友链页确认已添加本站链接）</li>
+      </ul>
+      <p><strong>校验通过</strong>：自动写入友链文件，触发构建，CDN 刷新后即在本站友链页可见。</p>
+      <p><strong>校验失败</strong>：会在 Issue 中评论失败原因，Issue 自动关闭。修改后请<strong>重新提交一个新 Issue</strong>。</p>
+      <p class="muted">如需修改或删除已有友链，请走 PR 流程并完成域名所有权验证（详见 <a href="https://github.com/moaradc/moara-friends#怎么更新友链" target="_blank">README</a>）。</p>
+    </div>
+
+    <footer>
+      <p>由 <a href="https://github.com/moaradc/moara-friends" target="_blank">moara-friends</a> 自动审核 · <a href="https://github.com/moaradc/moara-friends/issues" target="_blank">查看所有申请</a></p>
+    </footer>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  // 仓库地址
+  var REPO_OWNER = 'moaradc';
+  var REPO_NAME = 'moara-friends';
+  var ISSUE_NEW_URL = 'https://github.com/' + REPO_OWNER + '/' + REPO_NAME + '/issues/new';
+
+  // 字段引用
+  var $name = document.getElementById('name');
+  var $url = document.getElementById('url');
+  var $friendPageUrl = document.getElementById('friendPageUrl');
+  var $avatar = document.getElementById('avatar');
+  var $description = document.getElementById('description');
+  var $filename = document.getElementById('filename');
+  var $confirmBacklink = document.getElementById('confirm-backlink');
+  var $preview = document.getElementById('issue-preview');
+  var $btnSubmit = document.getElementById('btn-submit');
+  var $btnCopy = document.getElementById('btn-copy-issue');
+
+  // 校验规则
+  function isNonEmpty(s) { return s && s.trim().length > 0; }
+  function isHttpUrl(v) {
+    if (!v) return false;
+    try {
+      var u = new URL(v);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (e) { return false; }
+  }
+  function getHostname(urlStr) {
+    try { return new URL(urlStr).hostname; } catch (e) { return null; }
+  }
+  function isPublicUrl(urlStr) {
+    var u;
+    try { u = new URL(urlStr); } catch (e) { return false; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    var h = u.hostname.toLowerCase();
+    if (h === 'localhost' || h.endsWith('.localhost')) return false;
+    // 简单的内网检查（与服务端对齐）
+    if (/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.test(h)) {
+      var a = parseInt(RegExp.$1), b = parseInt(RegExp.$2);
+      if (a === 127 || a === 10 || a === 0) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+      if (a === 192 && b === 168) return false;
+      if (a === 169 && b === 254) return false;
+      if (a >= 224) return false;
+    }
+    return true;
+  }
+
+  // 文件名规则（与服务端一致）
+  function isValidFilename(s) {
+    return /^[A-Za-z0-9_-]+(?:\.json)?$/.test(s) && s.toLowerCase() !== '.json';
+  }
+
+  function setError(input, msg) {
+    var group = input.closest('.form-group');
+    if (!group) return;
+    var err = group.querySelector('.error');
+    if (msg) {
+      group.classList.add('has-error');
+      if (err) err.textContent = msg;
+    } else {
+      group.classList.remove('has-error');
+      if (err) err.textContent = '';
+    }
+  }
+
+  // 实时校验
+  function validate() {
+    var ok = true;
+    var errors = [];
+
+    if (!isNonEmpty($name.value)) { setError($name, '请填写站点名称'); ok = false; }
+    else if ($name.value.length > 60) { setError($name, '名称最长 60 字符'); ok = false; }
+    else setError($name, '');
+
+    if (!isNonEmpty($url.value)) { setError($url, '请填写站点 URL'); ok = false; }
+    else if (!isHttpUrl($url.value)) { setError($url, '必须是 http:// 或 https:// 开头的 URL'); ok = false; }
+    else if (!isPublicUrl($url.value)) { setError($url, '该地址不在公网范围内（拒绝内网/localhost）'); ok = false; }
+    else setError($url, '');
+
+    if (!isNonEmpty($friendPageUrl.value)) { setError($friendPageUrl, '请填写你的友链页 URL'); ok = false; }
+    else if (!isHttpUrl($friendPageUrl.value)) { setError($friendPageUrl, '必须是 http:// 或 https:// 开头的 URL'); ok = false; }
+    else if (!isPublicUrl($friendPageUrl.value)) { setError($friendPageUrl, '该地址不在公网范围内'); ok = false; }
+    else {
+      // 域名一致性
+      var urlHost = getHostname($url.value);
+      var blHost = getHostname($friendPageUrl.value);
+      if (urlHost && blHost && urlHost !== blHost) {
+        setError($friendPageUrl, '友链页域名必须和站点 URL 一致（当前：' + urlHost + ' vs ' + blHost + '）');
+        ok = false;
+      } else if (blHost === 'blog.945426.xyz') {
+        setError($friendPageUrl, '友链页不能指向本站');
+        ok = false;
+      } else {
+        setError($friendPageUrl, '');
+      }
+    }
+
+    if ($avatar.value && !isHttpUrl($avatar.value)) {
+      setError($avatar, '必须是 http:// 或 https:// 开头的 URL'); ok = false;
+    } else if ($avatar.value && !isPublicUrl($avatar.value)) {
+      setError($avatar, '该地址不在公网范围内'); ok = false;
+    } else setError($avatar, '');
+
+    if ($description.value && $description.value.length > 120) {
+      setError($description, '简介最长 120 字符'); ok = false;
+    } else setError($description, '');
+
+    if (!isNonEmpty($filename.value)) { setError($filename, '请填写文件名'); ok = false; }
+    else if (!isValidFilename($filename.value)) {
+      setError($filename, '只能用英文字母、数字、短横线、下划线，可选 .json 后缀'); ok = false;
+    } else setError($filename, '');
+
+    if (!$confirmBacklink.checked) {
+      ok = false;
+      errors.push('请勾选「我已在友链页添加本站链接」');
+    }
+
+    return { ok: ok, errors: errors };
+  }
+
+  // 生成 Issue body（与服务端 parseApplication 对齐）
+  function buildIssueBody() {
+    var lines = [];
+    lines.push('## Friend Link Application');
+    lines.push('');
+    lines.push('- Site Name: ' + ($name.value || '').trim());
+    lines.push('- Site URL: ' + ($url.value || '').trim());
+    lines.push('- Friend Page URL: ' + ($friendPageUrl.value || '').trim());
+    lines.push('- Avatar URL: ' + ($avatar.value || '').trim());
+    lines.push('- Short Description: ' + ($description.value || '').trim());
+    lines.push('- Filename: ' + normalizeFilename($filename.value));
+    lines.push('- Reciprocal Link Added: yes');
+    return lines.join('\n');
+  }
+
+  function normalizeFilename(s) {
+    if (!s) return s;
+    return s.endsWith('.json') ? s : s + '.json';
+  }
+
+  // 生成 Issue title
+  function buildIssueTitle() {
+    var name = ($name.value || '').trim() || '未命名站点';
+    return '[Friend Link] ' + name;
+  }
+
+  // 更新预览
+  function updatePreview() {
+    var v = validate();
+    if (!v.ok && ($name.value || $url.value || $friendPageUrl.value || $filename.value)) {
+      $preview.textContent = buildIssueBody() + '\n\n⚠️ 表单还有错误，请先修正：\n - ' + v.errors.join('\n - ');
+      $btnSubmit.disabled = true;
+    } else if (!v.ok) {
+      $preview.textContent = '请先完成上方表单填写...';
+      $btnSubmit.disabled = true;
+    } else {
+      $preview.textContent = buildIssueBody();
+      $btnSubmit.disabled = false;
+    }
+  }
+
+  // 生成 GitHub Issue URL（预填 title + body）
+  function buildIssueUrl() {
+    var title = buildIssueTitle();
+    var body = buildIssueBody();
+    return ISSUE_NEW_URL + '?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+  }
+
+  // 事件绑定
+  [$name, $url, $friendPageUrl, $avatar, $description, $filename].forEach(function ($el) {
+    $el.addEventListener('input', updatePreview);
+    $el.addEventListener('change', updatePreview);
+  });
+  $confirmBacklink.addEventListener('change', updatePreview);
+
+  $btnSubmit.addEventListener('click', function () {
+    var v = validate();
+    if (!v.ok) {
+      updatePreview();
+      return;
+    }
+    var url = buildIssueUrl();
+    // 在新窗口打开 GitHub Issue 创建页
+    window.open(url, '_blank');
+  });
+
+  $btnCopy.addEventListener('click', function () {
+    var body = buildIssueBody();
+    navigator.clipboard.writeText(body).then(function () {
+      $btnCopy.textContent = '已复制 ✓';
+      setTimeout(function () { $btnCopy.textContent = '复制 Issue 正文'; }, 1500);
+    }).catch(function () {
+      // fallback
+      var ta = document.createElement('textarea');
+      ta.value = body;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); $btnCopy.textContent = '已复制 ✓'; } catch (e) {}
+      document.body.removeChild(ta);
+      setTimeout(function () { $btnCopy.textContent = '复制 Issue 正文'; }, 1500);
+    });
+  });
+
+  // 复制按钮
+  document.querySelectorAll('.copy-btn[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy');
+      navigator.clipboard.writeText(text).then(function () {
+        var old = btn.textContent;
+        btn.textContent = '已复制 ✓';
+        setTimeout(function () { btn.textContent = old; }, 1500);
+      }).catch(function () {});
+    });
+  });
+
+  // 初始化预览
+  updatePreview();
+})();
+</script>
+</body>
+</html>

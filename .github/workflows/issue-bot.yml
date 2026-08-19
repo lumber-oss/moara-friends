@@ -1,0 +1,94 @@
+name: issue-bot
+
+# 友链申请 Issue 自动审核 + 写入仓库
+#
+# 设计：
+# - 监听 issues.opened（标题以 [Friend Link] 开头）
+# - 浏览器只生成预填 Issue 草稿 URL，不持有仓库写权限
+# - 校验通过后直接 git push data/friends/<filename>.json
+# - 触发 build.yml 重建 friends.json + 刷 jsDelivr
+# - 仅支持「新增」；修改/删除仍走 PR 路径（auto-pr.yml + 域名所有权验证）
+# - 当前不做冷却等待（COOLDOWN_MS=0），预留位置可调
+#
+# 手动触发 review 模式：扫描所有开放 [Friend Link] Issue 并重试处理
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '运行模式（review = 扫描所有开放 Issue）'
+        required: false
+        default: 'review'
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  # 同时至多一个 job（issues.opened 只投递一次，排队不取消避免丢失回执）
+  group: issue-bot
+  cancel-in-progress: false
+
+jobs:
+  process:
+    # 仅处理 [Friend Link] 开头的 Issue（手动 dispatch 不过滤）
+    if: github.event_name != 'issues' || startsWith(github.event.issue.title, '[Friend Link]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 完整历史：commitAndPushFriendFile 的 push 需要本地 HEAD 与远端一致
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Process friend-link issue (opened)
+        if: github.event_name == 'issues'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FRIEND_LINK_TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { runIssueBot } = await import('${{ github.workspace }}/scripts/validate-issue.mjs');
+            await runIssueBot({
+              mode: 'opened',
+              github,
+              core,
+              context,
+              env: process.env,
+            });
+
+      - name: Review all open friend-link issues (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FRIEND_LINK_TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { runIssueBot } = await import('${{ github.workspace }}/scripts/validate-issue.mjs');
+            await runIssueBot({
+              mode: 'review',
+              github,
+              core,
+              context,
+              env: process.env,
+            });

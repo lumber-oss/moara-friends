@@ -7,6 +7,11 @@
     "vip": true
   },
   {
+    "name": "backlink测试",
+    "url": "https://raw-posts.945426.xyz/link",
+    "description": "验证 backlink 字段会被写入 data/friends/*.json"
+  },
+  {
     "name": "test2",
     "url": "https://raw-posts.945426.xyz"
   }
